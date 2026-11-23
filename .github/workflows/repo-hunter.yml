@@ -1,0 +1,52 @@
+name: repo-hunter
+
+on:
+  schedule:
+    - cron: "0 6 * * *"    # every day 07:00 Tunis/Lagos time (cron is UTC)
+    - cron: "0 17 * * 0"   # Sunday 18:00: weekly thread draft
+  workflow_dispatch:       # "Run workflow" button in the Actions tab
+    inputs:
+      mode:
+        type: choice
+        options: [daily, weekly]
+        default: daily
+
+permissions:
+  contents: write          # to commit data/seen.json and data/history.json
+
+concurrency: repo-hunter
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          NICHE: ${{ vars.NICHE }}
+          TOPICS: ${{ vars.TOPICS }}
+          MIN_STARS: ${{ vars.MIN_STARS }}
+          TOP_N: ${{ vars.TOP_N }}
+          MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '0 17 * * 0' && 'weekly' || 'daily') }}
+        run: python main.py "$MODE"
+
+      - name: Save state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --cached --quiet || (git commit -m "chore: update repo history [skip ci]" && git push)
