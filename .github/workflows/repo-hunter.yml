@@ -44,6 +44,7 @@ jobs:
           TOPICS: ${{ vars.TOPICS }}
           MIN_STARS: ${{ vars.MIN_STARS }}
           TOP_N: ${{ vars.TOP_N }}
+          ACCOUNT_HANDLE: ${{ vars.ACCOUNT_HANDLE }}
           MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '0 17 * * 0' && 'weekly' || 'daily') }}
         run: python main.py "$MODE"
 
