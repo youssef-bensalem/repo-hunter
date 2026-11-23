@@ -1,7 +1,12 @@
 """Step 4: send drafts to a Discord channel through a webhook."""
+import json
+import os
+import tempfile
 import time
 
 import requests
+
+import card
 
 
 def og_image(full_name, salt="1"):
@@ -14,7 +19,16 @@ def _code(text):
     return "```\n" + text.replace("```", "'''") + "\n```"
 
 
-def build_daily_messages(items, date):
+def _make_card(item, card_dir, n):
+    try:
+        return card.render_card(item, os.path.join(card_dir, f"{n}-{item['full_name'].replace('/', '-')}.png"))
+    except Exception as e:  # a broken image must never stop the drafts from being sent
+        print(f"[warn] post image failed for {item['full_name']}: {e}")
+        return None
+
+
+def build_daily_messages(items, date, card_dir=None):
+    card_dir = card_dir or tempfile.mkdtemp(prefix="cards-")
     header = (f"## 📦 Repo picks for {date}\n"
               "Pick 1–2. Open the repo before posting, save the image, put the GitHub link in the first reply.")
     if not items:
@@ -40,9 +54,14 @@ def build_daily_messages(items, date):
                 {"name": "Created", "value": it["created_at"][:10], "inline": True},
                 {"name": "Found via", "value": ", ".join(it["sources"])[:1024], "inline": True},
             ],
-            "image": {"url": og_image(it["full_name"], date)},
         }
-        messages.append({"content": content[:2000], "embeds": [embed]})
+        msg = {"content": content[:2000], "embeds": [embed]}
+        path = _make_card(it, card_dir, n)
+        if path:
+            msg["file"] = path      # attached as a full-size PNG, ready to save and post
+        else:
+            embed["image"] = {"url": og_image(it["full_name"], date)}
+        messages.append(msg)
     return messages
 
 
@@ -60,12 +79,21 @@ def send(webhook_url, messages, dry_run=False):
         if dry_run:
             print(msg["content"])
             for e in msg.get("embeds", []):
-                print(f"   [embed] {e['title']} | image: {e['image']['url']}")
+                print(f"   [embed] {e['title']}" + (f" | image: {e['image']['url']}" if "image" in e else ""))
+            if msg.get("file"):
+                print(f"   [image] {msg['file']}")
             print()
             continue
-        payload = {**msg, "allowed_mentions": {"parse": []}}  # never ping @everyone from README text
+        path = msg.get("file")
+        payload = {k: v for k, v in msg.items() if k != "file"}
+        payload["allowed_mentions"] = {"parse": []}  # never ping @everyone from README text
         for _ in range(5):
-            r = requests.post(webhook_url, json=payload, timeout=30)
+            if path:
+                with open(path, "rb") as fh:
+                    r = requests.post(webhook_url, data={"payload_json": json.dumps(payload)},
+                                      files={"files[0]": (os.path.basename(path), fh, "image/png")}, timeout=60)
+            else:
+                r = requests.post(webhook_url, json=payload, timeout=30)
             if r.status_code == 429:
                 try:
                     wait = float(r.json().get("retry_after", 2))

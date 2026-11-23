@@ -57,6 +57,8 @@ LLM_DELAY = _int("LLM_DELAY", 5)             # seconds between LLM calls (stay u
 
 # --- Delivery ---
 DISCORD_WEBHOOK_URL = _env("DISCORD_WEBHOOK_URL", "")
+ACCOUNT_HANDLE = _env("ACCOUNT_HANDLE", "")      # your X handle, printed on the post images
+CARD_ACCENT = _env("CARD_ACCENT", "#3FD07A")      # accent color of the post images
 GITHUB_TOKEN = _env("GITHUB_TOKEN", _env("GH_TOKEN", ""))
 
 POST_MAX_CHARS = 280
