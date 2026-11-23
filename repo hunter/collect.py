@@ -35,6 +35,8 @@ def normalize(item, source):
         "full_name": item["full_name"],
         "url": item["html_url"],
         "owner": item["owner"]["login"],
+        "owner_type": item["owner"].get("type"),          # "User" or "Organization"
+        "owner_avatar": item["owner"].get("avatar_url"),
         "description": (item.get("description") or "").strip(),
         "stars": item.get("stargazers_count", 0),
         "forks": item.get("forks_count", 0),

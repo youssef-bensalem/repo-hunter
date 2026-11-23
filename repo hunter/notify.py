@@ -7,6 +7,7 @@ import time
 import requests
 
 import card
+from draft import x_length
 
 
 def og_image(full_name, salt="1"):
@@ -36,9 +37,13 @@ def build_daily_messages(items, date, card_dir=None):
     messages = [{"content": header}]
 
     for n, it in enumerate(items, 1):
-        content = (f"**{n}. {it['full_name']}** · ⭐ {it['stars']:,} · score {it['score']} · {it['chars']}/280\n"
-                   f"{_code(it['text'])}\n"
-                   f"Reply link: <{it['url']}>")
+        content = f"**{n}. {it['full_name']}** · ⭐ {it['stars']:,} · score {it['score']}\n"
+        if it.get("alt"):
+            content += (f"Option A · {it['chars']}/280\n{_code(it['text'])}\n"
+                        f"Option B · {x_length(it['alt'])}/280\n{_code(it['alt'])}\n")
+        else:
+            content += f"{it['chars']}/280\n{_code(it['text'])}\n"
+        content += f"Reply link: <{it['url']}>"
         if it.get("flag"):
             content += f"\n🚩 {it['flag']}"
         if it.get("warning"):

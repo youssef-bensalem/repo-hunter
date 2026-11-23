@@ -78,14 +78,49 @@ def llm_chat(messages, max_tokens=2048, temperature=0.7):
 # ---------- single post ----------
 
 POST_RULES = """You write posts for an X (Twitter) account about {niche}.
-Write ONE post about the GitHub repo below. Rules:
-- At most 250 characters in total. Plain text only: no markdown, no quotes, no links.
-- Line 1: a hook saying what problem the repo solves. No clickbait ("game-changer", "revolutionary", "insane").
-- Then a blank line and 2-3 short lines starting with "→ " naming concrete features.
-- Only state facts from the description or README. Never invent features, numbers or benchmarks.
+The voice: a developer telling a friend about a tool they just found. Specific, plain, a bit dry. Never marketing.
+
+Write TWO different posts about the GitHub repo below, separated by a line containing only ---
+
+Each post:
+- Line 1, the hook (max 80 characters). Lead with the concrete outcome or the pain it removes, and name the repo.
+  Post 1 states what it does for you. Post 2 uses a different angle: what it replaces, a "X, but Y" comparison,
+  or the annoying problem it kills.
+- A blank line, then exactly 3 lines starting with "→ ", each one concrete capability (max 55 characters each).
+  Prefer specifics from the README: platforms, languages, "runs offline", "no account", "one binary", formats.
+- If the README shows a one-line install command of max 40 characters (brew/pip/npm/cargo/docker), you may add
+  it as the last line, e.g. "brew install foo". Otherwise skip it.
 - {credit}
-- End with at most 2 relevant hashtags (for example #opensource).
-Reply with the post text only."""
+- No hashtags, no emoji, no links, no markdown, no quotes around the post. Max 250 characters in total.
+- Only state facts found in the description or README. Never invent features, numbers, stars or benchmarks.
+- Never use: game-changer, revolutionary, insane, mind-blowing, unleash, supercharge, seamless, powerful,
+  cutting-edge, elevate, effortless, "look no further", "you need this".
+
+Two examples of the format (invented repos, do not reuse their wording):
+
+ripdocs turns any docs website into one clean Markdown file.
+
+→ Follows links, strips nav and ads
+→ Keeps code blocks and tables intact
+→ Output ready to paste into an LLM
+pip install ripdocs
+---
+Stop copy-pasting docs into ChatGPT page by page. ripdocs grabs them all.
+
+→ Crawls a whole docs site in one command
+→ Strips menus, footers and cookie banners
+→ Saves one tidy Markdown file
+
+Reply with the two posts only."""
+
+
+def _split_variants(raw):
+    parts = []
+    for part in re.split(r"^\s*-{3,}\s*$", raw, flags=re.M):
+        part = _tidy(re.sub(r"^\s*(post|option|variant)?\s*[AB12][:.)]\s+", "", part.strip(), flags=re.I))
+        if part:
+            parts.append(part)
+    return parts[:2]
 
 
 def _repo_brief(repo, readme):
@@ -101,11 +136,11 @@ def fallback_post(repo, handle=None):
     """Template draft used when no LLM is configured or the LLM fails."""
     name = repo["full_name"].split("/", 1)[1]
     desc = repo["description"].rstrip(".")
-    tail = [f"→ {repo.get('language') or 'Open source'} · {repo.get('license') or 'see repo'} license",
+    lic = repo.get("license") if repo.get("license") not in (None, "NOASSERTION") else "custom"
+    tail = [f"→ {repo.get('language') or 'Open source'} · {lic} license",
             f"→ {repo['stars']:,} stars on GitHub"]
     if handle:
         tail.append(f"by @{handle}")
-    tail.append("#opensource #github")
 
     def build(d):
         return "\n".join([f"{name}: {d}", ""] + tail)
@@ -119,7 +154,7 @@ def fallback_post(repo, handle=None):
 
 
 def draft_post(repo, readme, handle=None):
-    credit = (f'Put "by @{handle}" on its own line before the hashtags.' if handle
+    credit = (f'End the post with "by @{handle}" on its own line (the maintainer).' if handle
               else "Do not mention or tag any person or account.")
     messages = [
         {"role": "system", "content": POST_RULES.format(niche=config.NICHE, credit=credit)},
@@ -127,22 +162,28 @@ def draft_post(repo, readme, handle=None):
     ]
     warning = None
     try:
-        text = _tidy(llm_chat(messages))
-        if x_length(text) > config.POST_MAX_CHARS:
-            messages += [{"role": "assistant", "content": text},
-                         {"role": "user", "content": f"That is {x_length(text)} characters. "
-                                                     "Rewrite it under 240 characters with the same rules."}]
-            text = _tidy(llm_chat(messages))
+        raw = llm_chat(messages)
+        variants = _split_variants(raw)
+        if not variants:
+            raise LLMError("empty draft")
+        if any(x_length(v) > config.POST_MAX_CHARS for v in variants):
+            lengths = ", ".join(str(x_length(v)) for v in variants)
+            messages += [{"role": "assistant", "content": raw},
+                         {"role": "user", "content": f"Those are {lengths} characters. Rewrite both under 240 "
+                                                     "characters with the same rules and the --- separator."}]
+            variants = _split_variants(llm_chat(messages)) or variants
         used_llm = True
     except LLMError as e:
         print(f"[warn] LLM draft failed for {repo['full_name']}: {e}")
-        text, used_llm = fallback_post(repo, handle), False
+        variants, used_llm = [fallback_post(repo, handle)], False
         warning = f"template draft (LLM: {e})"
 
+    text, alt = variants[0], (variants[1] if len(variants) > 1 else None)
     chars = x_length(text)
-    if chars > config.POST_MAX_CHARS:
-        warning = (warning + "; " if warning else "") + f"{chars}/280 chars, trim before posting"
-    return {"text": text, "chars": chars, "used_llm": used_llm, "warning": warning}
+    too_long = [label for label, v in (("A", text), ("B", alt)) if v and x_length(v) > config.POST_MAX_CHARS]
+    if too_long:
+        warning = (warning + "; " if warning else "") + f"option {'/'.join(too_long)} over 280 chars, trim before posting"
+    return {"text": text, "alt": alt, "chars": chars, "used_llm": used_llm, "warning": warning}
 
 
 # ---------- weekly thread ----------

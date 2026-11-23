@@ -12,6 +12,7 @@ import sys
 import time
 
 import config
+from card import find_logo_urls
 from collect import collect, fetch_readme, fetch_x_handle, gh_session
 from draft import clean_readme, draft_post, draft_thread
 from notify import build_daily_messages, build_weekly_messages, send
@@ -67,7 +68,7 @@ def run_daily(dry_run=False, now=None):
             time.sleep(config.LLM_DELAY)
         handle = fetch_x_handle(session, repo["owner"])
         draft = draft_post(repo, clean_readme(readme), handle)
-        picks.append({**repo, **draft, "x_handle": handle})
+        picks.append({**repo, **draft, "x_handle": handle, "logo_urls": find_logo_urls(readme, repo)})
         print(f"  pick {repo['full_name']} (score {repo['score']}, {draft['chars']} chars)")
 
     send(config.DISCORD_WEBHOOK_URL, build_daily_messages(picks, today), dry_run=dry_run)

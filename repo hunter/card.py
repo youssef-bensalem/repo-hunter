@@ -1,8 +1,11 @@
 """Draws a 1600x900 post image for a repo, in the Repo Hunter style (dark terminal look)."""
+import io
 import math
 import os
+import posixpath
 import re
 import unicodedata
+from urllib.parse import urlparse
 
 import requests
 from PIL import Image, ImageDraw, ImageFont
@@ -126,6 +129,130 @@ def _reticle(d, cx, cy, r, color, width, glyph=None):
         d.ellipse([bx - nr, by - nr, bx + nr, by + nr], fill=BG, outline=color, width=max(int(9 * s), 2))
 
 
+# ---------- repo logo ----------
+
+_BADGE_RE = re.compile(r"shields\.io|badge|badgen|codecov|travis-ci|circleci|star-history|contrib\.rocks|"
+                       r"readme-stats|typing-svg|komarev|visitor|deepwiki|buymeacoffee|ko-fi|producthunt|"
+                       r"/actions/workflows/|vercel\.com/button|trendshift", re.I)
+_LOGO_RE = re.compile(r"logo|icon", re.I)
+
+
+def _attr(tag, name):
+    m = re.search(rf'\b{name}\s*=\s*["\']([^"\']+)["\']', tag, re.I)
+    return m.group(1).strip() if m else ""
+
+
+def _resolve(src, full_name):
+    """Turn a README image path into a downloadable URL."""
+    src = src.strip().strip("<>")
+    if not src or src.startswith(("data:", "#", "mailto:")):
+        return None
+    if src.startswith("//"):
+        src = "https:" + src
+    if src.startswith(("http://", "https://")):
+        m = re.match(r"https?://github\.com/([^/]+/[^/]+)/(?:blob|raw)/(.+)", src)
+        return f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}" if m else src
+    path = re.sub(r"^(\./)+", "", src).lstrip("/")
+    return f"https://raw.githubusercontent.com/{full_name}/HEAD/{path}"
+
+
+def find_logo_urls(readme, repo, limit=4):
+    """Logo candidates, best first: dark-mode README logo, README logo, organization avatar.
+    Personal avatars are skipped (usually a face, not a logo)."""
+    head = (readme or "")[:5000]   # logos live at the top of a README
+    found = []
+
+    def add(src, alt=""):
+        url = _resolve(src, repo["full_name"])
+        if not url or _BADGE_RE.search(url):
+            return
+        name = posixpath.basename(urlparse(url).path)
+        if (_LOGO_RE.search(name) or _LOGO_RE.search(alt)) and url not in found:
+            found.append(url)
+
+    for tag in re.findall(r"<source\b[^>]*>", head, re.I):
+        if re.search(r"prefers-color-scheme:\s*dark", tag, re.I):
+            srcset = _attr(tag, "srcset")
+            if srcset:
+                add(srcset.split(",")[0].split()[0])
+    imgs = [(m.start(), _attr(m.group(0), "src"), _attr(m.group(0), "alt"))
+            for m in re.finditer(r"<img\b[^>]*>", head, re.I)]
+    imgs += [(m.start(), m.group(2), m.group(1))
+             for m in re.finditer(r"!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)", head)]
+    for _, src, alt in sorted(imgs):
+        if src:
+            add(src, alt)
+    if repo.get("owner_type") == "Organization" and repo.get("owner_avatar"):
+        avatar = repo["owner_avatar"]
+        found.append(avatar + ("&" if "?" in avatar else "?") + "s=400")
+    return found[:limit]
+
+
+def _svg_to_image(data):
+    try:
+        import cairosvg
+    except (ImportError, OSError):   # cairo not installed: skip SVG logos
+        return None
+    png = cairosvg.svg2png(bytestring=data, output_height=512)   # unsafe=False: no local/external file access
+    return Image.open(io.BytesIO(png))
+
+
+def load_logo(urls, max_bytes=5_000_000):
+    """First candidate that downloads and opens as a sensible image, as RGBA; else None."""
+    for url in urls or []:
+        try:
+            with requests.get(url, timeout=15, stream=True, headers={"User-Agent": "repo-hunter"}) as r:
+                r.raise_for_status()
+                data = r.raw.read(max_bytes + 1, decode_content=True)
+                ctype = r.headers.get("content-type", "")
+            if len(data) > max_bytes:
+                continue
+            is_svg = ("svg" in ctype or urlparse(url).path.lower().endswith(".svg")
+                      or data.lstrip()[:5] in (b"<?xml", b"<svg ", b"<svg>"))
+            img = _svg_to_image(data) if is_svg else Image.open(io.BytesIO(data))
+            if img is None:
+                continue
+            img.load()
+            img = img.convert("RGBA")
+            bbox = img.getchannel("A").getbbox()   # trim transparent padding
+            if bbox:
+                img = img.crop(bbox)
+            if img.width >= 32 and img.height >= 32 and 0.2 <= img.width / img.height <= 5:
+                return img
+        except Exception as e:   # bad URL, 404, broken or unsupported image: try the next one
+            print(f"[warn] logo skipped ({url}): {e}")
+    return None
+
+
+def logo_tile(img, max_w=360, max_h=176, pad=20):
+    """Logo ready to paste on the dark card. Transparent logos sit on a tile that contrasts with
+    them (dark logo -> light tile); opaque images (like org avatars) just get rounded corners."""
+    alpha = img.getchannel("A")
+    transparent = alpha.getextrema()[0] < 250
+    if transparent:
+        small = img.resize((64, 64))
+        px = list(small.get_flattened_data() if hasattr(small, "get_flattened_data") else small.getdata())
+        weight = sum(a for *_, a in px) or 1
+        lum = sum((0.299 * r + 0.587 * g + 0.114 * b) * a for r, g, b, a in px) / weight
+        inner_w, inner_h = max_w - 2 * pad, max_h - 2 * pad
+    else:
+        inner_w, inner_h = max_w, max_h
+    scale = min(inner_w / img.width, inner_h / img.height)
+    logo = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
+
+    if not transparent:
+        mask = Image.new("L", logo.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle([0, 0, logo.width - 1, logo.height - 1], radius=24, fill=255)
+        logo.putalpha(mask)
+        return logo
+    tile = Image.new("RGBA", (logo.width + 2 * pad, logo.height + 2 * pad), (0, 0, 0, 0))
+    fill, outline = ((230, 237, 243, 255), None) if lum < 110 else ((22, 27, 34, 255), (48, 58, 70, 255))
+    ImageDraw.Draw(tile).rounded_rectangle([0, 0, tile.width - 1, tile.height - 1], radius=24,
+                                           fill=fill, outline=outline, width=2)
+    tile.alpha_composite(logo, (pad, pad))
+    return tile
+
+
 def _star(d, cx, cy, r, color):
     pts = []
     for i in range(10):
@@ -135,16 +262,29 @@ def _star(d, cx, cy, r, color):
     d.polygon(pts, fill=color)
 
 
-def render_card(repo, path, accent=None, handle=None):
+def render_card(repo, path, accent=None, handle=None, logo=None):
     accent = _hex(accent or config.CARD_ACCENT)
     handle = (config.ACCOUNT_HANDLE if handle is None else handle).lstrip("@")
+    if logo is None and repo.get("logo_urls"):
+        logo = load_logo(repo["logo_urls"])
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
 
     for x in range(16, W, 32):          # dot grid
         for y in range(16, H, 32):
             d.ellipse([x - 1.5, y - 1.5, x + 1.5, y + 1.5], fill=DOT)
-    _reticle(d, W + 10, 70, 230, FADED, 8)
+
+    logo_space = 0
+    if logo is not None:                # top right, above the repo name
+        tile = logo_tile(logo)
+        lx, ly = W - PAD - tile.width, 64 + (176 - tile.height) // 2
+        base = img.convert("RGBA")
+        base.alpha_composite(tile, (lx, ly))
+        img = base.convert("RGB")
+        d = ImageDraw.Draw(img)
+        logo_space = tile.width + 40
+    else:
+        _reticle(d, W + 10, 70, 230, FADED, 8)
 
     # prompt line
     f_prompt = font("Regular", 30)
@@ -156,7 +296,8 @@ def render_card(repo, path, accent=None, handle=None):
     owner, name = repo["full_name"].split("/", 1)
     width = W - 2 * PAD
     y = PAD + 92
-    d.text((PAD, y), _truncate(d, f"{owner} /", font("Regular", 40), width), font=font("Regular", 40), fill=MUTED)
+    d.text((PAD, y), _truncate(d, f"{owner} /", font("Regular", 40), width - logo_space),
+           font=font("Regular", 40), fill=MUTED)
     y += 62
     name_text, f_name = fit_line(d, name, "ExtraBold", 104, 56, width)
     d.text((PAD, y), name_text, font=f_name, fill=WHITE)

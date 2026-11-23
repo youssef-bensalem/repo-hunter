@@ -32,6 +32,8 @@ def reject_reason(repo, seen, now):
         letters = [c for c in repo["description"] if c.isalpha()]
         if letters and sum(ord(c) > 0x024F for c in letters) / len(letters) > 0.3:
             return "non-English description"
+    if len(repo["description"].split()) < 3:
+        return "description too short"
     return None
 
 
