@@ -48,5 +48,55 @@
     "score": 650.48,
     "text": "blender-ai-mcp-addon: AI assistant and MCP server for Blender: visual chat, scene tools, multi-agent workflows. Works with ChatGPT/GPT, Claude, Gemini, Ollama, OpenCode. Blender AI addon, copilot for 3D,…\n\n→ Open source · MIT license\n→ 2,765 stars on GitHub\n#opensource #github",
     "date": "2026-11-23"
+  },
+  {
+    "full_name": "omonkeyz/xbox-emulator",
+    "url": "https://github.com/omonkeyz/xbox-emulator",
+    "description": "Progress notes for running Xbox Series X|S builds on PC (TomBox + rage9)",
+    "stars": 1633,
+    "language": "Rust",
+    "score": 638.39,
+    "text": "xbox-emulator: Progress notes for running Xbox Series X|S builds on PC (TomBox + rage9).\n\n→ Rust · GPL-3.0 license\n→ 1,633 stars on GitHub\n#opensource #github",
+    "date": "2026-11-23"
+  },
+  {
+    "full_name": "AFK-surf/xnulinux",
+    "url": "https://github.com/AFK-surf/xnulinux",
+    "description": "XNU as a loadable kernel module inside Linux (macOS personality for arm64 Linux)",
+    "stars": 1833,
+    "language": "Objective-C++",
+    "score": 528.58,
+    "text": "xnulinux: XNU as a loadable kernel module inside Linux (macOS personality for arm64 Linux).\n\n→ Objective-C++ · NOASSERTION license\n→ 1,833 stars on GitHub\nby @afk_surf\n#opensource #github",
+    "date": "2026-11-23"
+  },
+  {
+    "full_name": "iamajmeena/neonclipping",
+    "url": "https://github.com/iamajmeena/neonclipping",
+    "description": "Paste a link, get captioned 9:16 clips in ~2 min. Free, local, open-source clipping engine (audio-first, YouTube captions, local LLM).",
+    "stars": 2301,
+    "language": "Python",
+    "score": 513.6,
+    "text": "neonclipping: Paste a link, get captioned 9:16 clips in ~2 min. Free, local, open-source clipping engine (audio-first, YouTube captions, local LLM).\n\n→ Python · MIT license\n→ 2,301 stars on GitHub\n#opensource #github",
+    "date": "2026-11-23"
+  },
+  {
+    "full_name": "R0Y00/Xbox2Windows",
+    "url": "https://github.com/R0Y00/Xbox2Windows",
+    "description": "Static recompilation research for Xbox Series X|S software on x64 Windows, with source-built CPU and GPU tests. Full-game startup is unverified.",
+    "stars": 1485,
+    "language": "Python",
+    "score": 470.15,
+    "text": "Xbox2Windows: Static recompilation research for Xbox Series X|S software on x64 Windows, with source-built CPU and GPU tests. Full-game startup is unverified.\n\n→ Python · MIT license\n→ 1,485 stars on GitHub\n#opensource #github",
+    "date": "2026-11-23"
+  },
+  {
+    "full_name": "deepseek-ai/chat-demo",
+    "url": "https://github.com/deepseek-ai/chat-demo",
+    "description": "Chat Demo",
+    "stars": 5342,
+    "language": "TypeScript",
+    "score": 462.18,
+    "text": "chat-demo: Chat Demo.\n\n→ TypeScript · MIT license\n→ 5,342 stars on GitHub\n#opensource #github",
+    "date": "2026-11-23"
   }
 ]
