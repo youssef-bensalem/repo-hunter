@@ -172,21 +172,63 @@ def test_thread_parsing(monkeypatch):
 
 # ---------- notify ----------
 
-def test_discord_messages_and_send(monkeypatch):
+def test_discord_messages_and_send(monkeypatch, tmp_path):
     item = {**repo("x/tool"), "score": 12.5, "text": "Post ```text```", "chars": 20, "warning": None}
-    msgs = notify.build_daily_messages([item], "2026-11-23")
+    msgs = notify.build_daily_messages([item], "2026-11-23", card_dir=str(tmp_path))
     assert len(msgs) == 2
     assert "```\nPost '''text'''\n```" in msgs[1]["content"]
-    assert msgs[1]["embeds"][0]["image"]["url"] == "https://opengraph.githubassets.com/2026-11-23/x/tool"
+    assert msgs[1]["file"].endswith("1-x-tool.png") and "image" not in msgs[1]["embeds"][0]
 
-    sent, seq = [], iter([FakeResp(429, {"retry_after": 0.1}), FakeResp(204, {}), FakeResp(204, {})])
+    sent, seq = [], iter([FakeResp(204, {}), FakeResp(429, {"retry_after": 0.1}), FakeResp(204, {})])
 
-    def fake_post(url, json=None, timeout=None):
-        sent.append(json)
+    def fake_post(url, json=None, data=None, files=None, timeout=None):
+        if files:
+            name, fh, mime = files["files[0]"]
+            sent.append(("file", __import__("json").loads(data["payload_json"]), name, fh.read()[:8], mime))
+        else:
+            sent.append(("json", json))
         return next(seq)
     monkeypatch.setattr(notify.requests, "post", fake_post)
     notify.send("https://discord/webhook", msgs)
-    assert len(sent) == 3 and sent[0]["allowed_mentions"] == {"parse": []}
+    assert sent[0] == ("json", {"content": msgs[0]["content"], "allowed_mentions": {"parse": []}})
+    assert len(sent) == 3 and sent[1] == sent[2]  # 429 retried with the same upload
+    kind, payload, name, head, mime = sent[2]
+    assert (kind, name, head, mime) == ("file", "1-x-tool.png", b"\x89PNG\r\n\x1a\n", "image/png")
+    assert "file" not in payload and payload["allowed_mentions"] == {"parse": []}
+
+
+def test_card_failure_falls_back_to_github_preview(monkeypatch, tmp_path):
+    def broken(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(notify.card, "render_card", broken)
+    item = {**repo("x/tool"), "score": 1, "text": "t", "chars": 1, "warning": None}
+    msg = notify.build_daily_messages([item], "2026-11-23", card_dir=str(tmp_path))[1]
+    assert "file" not in msg
+    assert msg["embeds"][0]["image"]["url"] == "https://opengraph.githubassets.com/2026-11-23/x/tool"
+
+
+# ---------- card ----------
+
+def test_card_renders_long_and_messy_input(tmp_path):
+    from PIL import Image
+    import card
+    r = repo("some-very-long-organisation-name/an-extremely-long-repository-name-that-cannot-fit-on-one-line",
+             desc=":rocket: 🚀 Blazing fast " + "tool that does many useful things " * 12, stars=1234567)
+    path = card.render_card(r, str(tmp_path / "c.png"), handle="repohunterdev")
+    img = Image.open(path)
+    assert img.size == (1600, 900) and img.format == "PNG"
+
+
+def test_clean_text_and_wrap():
+    import card
+    from PIL import Image, ImageDraw
+    assert card.clean_text(":rocket: Fast 🚀 CLI ✨ tool‍") == "Fast CLI tool"
+    d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    f = card.font("Regular", 40)
+    lines = card.wrap(d, "word " * 200, f, 800, 4)
+    assert len(lines) == 4 and lines[-1].endswith("…")
+    assert all(d.textlength(l, font=f) <= 800 for l in lines)
+    assert card.wrap(d, "short text", f, 800, 4) == ["short text"]
 
 
 # ---------- main (end to end with fakes) ----------
