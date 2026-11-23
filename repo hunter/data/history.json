@@ -1,1 +1,52 @@
-[]
+[
+  {
+    "full_name": "ItsNotRexed/Leonida",
+    "url": "https://github.com/ItsNotRexed/Leonida",
+    "description": "Leonida Is A Native PC Recompilation Of The Xbox Version Of Grand Theft Auto 6",
+    "stars": 30481,
+    "language": "Python",
+    "score": 10074.23,
+    "text": "Leonida: Leonida Is A Native PC Recompilation Of The Xbox Version Of Grand Theft Auto 6.\n\n→ Python · GPL-3.0 license\n→ 30,481 stars on GitHub\n#opensource #github",
+    "date": "2026-11-23"
+  },
+  {
+    "full_name": "EL4CTEO/fast-anything",
+    "url": "https://github.com/EL4CTEO/fast-anything",
+    "description": "Don't rewrite it in Rust. Rewrite the 5% that's slow: profile Python, Node or Ruby apps, port the hot functions with your coding agent, prove they behave the same.",
+    "stars": 3052,
+    "language": "Rust",
+    "score": 1354.9,
+    "text": "fast-anything: Don't rewrite it in Rust. Rewrite the 5% that's slow: profile Python, Node or Ruby apps, port the hot functions with your coding agent, prove they behave the same.\n\n→ Rust · MIT license\n→ 3,052 stars on GitHub\n#opensource #github",
+    "date": "2026-11-23"
+  },
+  {
+    "full_name": "erkamyaman/rust-anything",
+    "url": "https://github.com/erkamyaman/rust-anything",
+    "description": "Rewrite your whole app in Rust, one piece at a time, checked against the original's recorded behavior at every step. CLIs, HTTP servers and libraries in TypeScript, Python, C, Go, Ruby and Java.",
+    "stars": 8650,
+    "language": "Rust",
+    "score": 1175.81,
+    "text": "rust-anything: Rewrite your whole app in Rust, one piece at a time, checked against the original's recorded behavior at every step. CLIs, HTTP servers and libraries in TypeScript, Python, C,…\n\n→ Rust · MIT license\n→ 8,650 stars on GitHub\nby @erkamyaman_ng\n#opensource #github",
+    "date": "2026-11-23"
+  },
+  {
+    "full_name": "os6/nospeaker",
+    "url": "https://github.com/os6/nospeaker",
+    "description": "make your macbook's trackpad talk using its haptic motor",
+    "stars": 1325,
+    "language": "Swift",
+    "score": 974.34,
+    "text": "nospeaker: make your macbook's trackpad talk using its haptic motor.\n\n→ Swift · MIT license\n→ 1,325 stars on GitHub\nby @codycollier\n#opensource #github",
+    "date": "2026-11-23"
+  },
+  {
+    "full_name": "bookwjitchieni1986/blender-ai-mcp-addon",
+    "url": "https://github.com/bookwjitchieni1986/blender-ai-mcp-addon",
+    "description": "AI assistant and MCP server for Blender: visual chat, scene tools, multi-agent workflows. Works with ChatGPT/GPT, Claude, Gemini, Ollama, OpenCode. Blender AI addon, copilot for 3D, bpy Python scripting, MCP integration.",
+    "stars": 2765,
+    "language": null,
+    "score": 650.48,
+    "text": "blender-ai-mcp-addon: AI assistant and MCP server for Blender: visual chat, scene tools, multi-agent workflows. Works with ChatGPT/GPT, Claude, Gemini, Ollama, OpenCode. Blender AI addon, copilot for 3D,…\n\n→ Open source · MIT license\n→ 2,765 stars on GitHub\n#opensource #github",
+    "date": "2026-11-23"
+  }
+]
