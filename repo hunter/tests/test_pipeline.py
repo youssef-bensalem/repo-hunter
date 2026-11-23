@@ -138,7 +138,7 @@ def test_fallback_post_fits():
 
 def test_draft_uses_llm_and_retries_when_too_long(monkeypatch):
     monkeypatch.setattr(config, "LLM_API_KEY", "k")
-    replies = iter(["x" * 400, '"Short post\n\n→ feature\n#opensource"'])
+    replies = iter(["x" * 400, 'Post A: "Short post\n\n→ feature"\n---\nOption B) Other angle\n\n→ thing'])
     calls = []
 
     def fake_post(url, json=None, headers=None, timeout=None):
@@ -146,7 +146,8 @@ def test_draft_uses_llm_and_retries_when_too_long(monkeypatch):
         return FakeResp(data={"choices": [{"message": {"content": next(replies)}}]})
     monkeypatch.setattr(draft.requests, "post", fake_post)
     out = draft.draft_post(repo("x/tool"), "readme", "maker")
-    assert out == {"text": "Short post\n\n→ feature\n#opensource", "chars": 34, "used_llm": True, "warning": None}
+    assert out == {"text": "Short post\n\n→ feature", "alt": "Other angle\n\n→ thing", "chars": 22,
+                   "used_llm": True, "warning": None}
     assert len(calls) == 2 and calls[0][0].endswith("/chat/completions")
     assert 'by @maker' in calls[0][1]["messages"][0]["content"]
 
@@ -303,3 +304,100 @@ def test_english_filter_and_suspicious_flag():
     assert flags["x/hot"] and flags["x/ok"] is None
     item = {**score.rank([hot], {}, now=NOW)[0], "text": "t", "chars": 1, "warning": None}
     assert "🚩" in notify.build_daily_messages([item], "d")[1]["content"]
+
+
+def test_two_options_shown_in_discord(tmp_path):
+    item = {**repo("x/tool"), "score": 1, "text": "Option one", "alt": "Option two", "chars": 10, "warning": None}
+    content = notify.build_daily_messages([item], "d", card_dir=str(tmp_path))[1]["content"]
+    assert "Option A · 10/280\n```\nOption one\n```" in content and "Option B · 10/280\n```\nOption two\n```" in content
+
+
+# ---------- logos ----------
+
+README = '''<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./docs/logo-dark.svg">
+    <img alt="Tool logo" src="docs/logo-light.png" width="200">
+  </picture>
+</p>
+[![CI](https://github.com/o/r/actions/workflows/ci.yml/badge.svg)](x) ![stars](https://img.shields.io/github/stars/o/r)
+![screenshot](assets/screenshot.png)
+<img src="https://github.com/o/r/blob/main/assets/icon.png">
+''' + "x" * 6000 + "![late logo](late-logo.png)"
+
+
+def test_find_logo_urls():
+    import card
+    org = repo("o/r"); org.update(owner_type="Organization", owner_avatar="https://avatars.githubusercontent.com/u/1?v=4")
+    assert card.find_logo_urls(README, org) == [
+        "https://raw.githubusercontent.com/o/r/HEAD/docs/logo-dark.svg",
+        "https://raw.githubusercontent.com/o/r/HEAD/docs/logo-light.png",
+        "https://raw.githubusercontent.com/o/r/main/assets/icon.png",
+        "https://avatars.githubusercontent.com/u/1?v=4&s=400",
+    ]
+    user = repo("o/r"); user.update(owner_type="User", owner_avatar="https://avatars.githubusercontent.com/u/2?v=4")
+    assert card.find_logo_urls("no images here", user) == []
+
+
+def _png_bytes(color, size=(120, 120), mode="RGBA"):
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new(mode, size, color).save(buf, "PNG")
+    return buf.getvalue()
+
+
+class FakeStream:
+    def __init__(self, status, data, ctype="image/png"):
+        import io
+        self.status_code, self.raw, self.headers = status, io.BytesIO(data), {"content-type": ctype}
+        self.raw.read = (lambda f: (lambda n, decode_content=True: f(n)))(self.raw.read)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+            raise requests.HTTPError(str(self.status_code))
+
+
+def test_load_logo_tries_candidates_in_order(monkeypatch):
+    import card
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><circle cx="20" cy="20" r="18" fill="#000"/></svg>'
+    responses = {"https://a/missing.png": FakeStream(404, b""),
+                 "https://a/broken.png": FakeStream(200, b"not an image"),
+                 "https://a/logo.svg": FakeStream(200, svg, "image/svg+xml")}
+    monkeypatch.setattr(card.requests, "get", lambda url, **k: responses[url])
+    img = card.load_logo(list(responses))
+    assert img is not None and img.mode == "RGBA" and img.height > 400   # svg rasterised at 512, padding trimmed
+
+
+def test_logo_tile_contrast():
+    import card
+    from PIL import Image
+    dark = Image.new("RGBA", (100, 100), (0, 0, 0, 0)); dark.paste((10, 10, 10, 255), (20, 20, 80, 80))
+    light = Image.new("RGBA", (100, 100), (0, 0, 0, 0)); light.paste((250, 250, 250, 255), (20, 20, 80, 80))
+    assert card.logo_tile(dark).getpixel((5, 60))[:3] == (230, 237, 243)    # dark logo -> light tile
+    assert card.logo_tile(light).getpixel((5, 60))[:3] == (22, 27, 34)      # light logo -> dark tile
+    wide = card.logo_tile(Image.new("RGBA", (1000, 100), (200, 0, 0, 255)))  # opaque, wide
+    assert wide.width <= 360 and wide.height <= 176 and wide.getpixel((0, 0))[3] == 0   # rounded corner
+
+
+def test_card_with_logo(tmp_path, monkeypatch):
+    import card
+    from PIL import Image
+    monkeypatch.setattr(card.requests, "get", lambda url, **k: FakeStream(200, _png_bytes((255, 0, 0, 255))))
+    r = {**repo("o/a-repo-with-a-pretty-long-name-indeed"), "logo_urls": ["https://a/logo.png"]}
+    img = Image.open(card.render_card(r, str(tmp_path / "c.png"), handle=""))
+    assert img.size == (1600, 900) and img.getpixel((1460, 150)) == (255, 0, 0)   # logo drawn top right
+
+
+def test_short_description_and_noassertion():
+    assert score.reject_reason(repo("x/chat-demo", desc="Chat Demo."), {}, NOW) == "description too short"
+    r = repo("x/tool", desc="A tool that does useful things")
+    r["license"] = "NOASSERTION"
+    assert "custom license" in draft.fallback_post(r) and "NOASSERTION" not in draft.fallback_post(r)
