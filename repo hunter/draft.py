@@ -7,6 +7,9 @@ import requests
 import config
 
 
+CAPTION_RETRY_CHARS = 160   # ask for a shorter rewrite above this
+
+
 class LLMError(Exception):
     pass
 
@@ -77,41 +80,35 @@ def llm_chat(messages, max_tokens=2048, temperature=0.7):
 
 # ---------- single post ----------
 
-POST_RULES = """You write posts for an X (Twitter) account about {niche}.
-The voice: a developer telling a friend about a tool they just found. Specific, plain, a bit dry. Never marketing.
+POST_RULES = """You write captions for an X (Twitter) account about {niche}.
+Each post is an image that already shows the repo name, description, stars, language and license.
+The caption sits above the image. Its only job is to make a developer stop scrolling.
 
-Write TWO different posts about the GitHub repo below, separated by a line containing only ---
+Write TWO captions for the GitHub repo below, separated by a line containing only ---
 
-Each post:
-- Line 1, the hook (max 80 characters). Lead with the concrete outcome or the pain it removes, and name the repo.
-  Post 1 states what it does for you. Post 2 uses a different angle: what it replaces, a "X, but Y" comparison,
-  or the annoying problem it kills.
-- A blank line, then exactly 3 lines starting with "→ ", each one concrete capability (max 55 characters each).
-  Prefer specifics from the README: platforms, languages, "runs offline", "no account", "one binary", formats.
-- If the README shows a one-line install command of max 40 characters (brew/pip/npm/cargo/docker), you may add
-  it as the last line, e.g. "brew install foo". Otherwise skip it.
+Each caption:
+- 1 or 2 short lines, at most 120 characters in total. Short beats complete.
+- Line 1 is the hook: a pain everyone knows, a surprising result, or the paid thing it replaces.
+- Line 2 (optional) names the repo and the payoff in plain words.
+- Caption 1 leads with what you get. Caption 2 takes another angle: the pain it kills,
+  what it replaces, or "X, but Y".
+- Talk like a developer talking to a friend: simple words, concrete, a bit dry.
 - {credit}
-- No hashtags, no emoji, no links, no markdown, no quotes around the post. Max 250 characters in total.
-- Only state facts found in the description or README. Never invent features, numbers, stars or benchmarks.
-- Never use: game-changer, revolutionary, insane, mind-blowing, unleash, supercharge, seamless, powerful,
-  cutting-edge, elevate, effortless, "look no further", "you need this".
+- No hashtags, emoji, links, markdown or quotes. Never start with "Introducing" or a question
+  like "Tired of...?".
+- Only facts from the description or README. Never invent numbers, stars or benchmarks.
+- Never use: game-changer, revolutionary, insane, mind-blowing, unleash, supercharge, seamless,
+  powerful, cutting-edge, elevate, effortless, "look no further", "you need this".
 
-Two examples of the format (invented repos, do not reuse their wording):
+Examples of the style (invented repos, do not reuse their wording):
 
-ripdocs turns any docs website into one clean Markdown file.
-
-→ Follows links, strips nav and ads
-→ Keeps code blocks and tables intact
-→ Output ready to paste into an LLM
-pip install ripdocs
+Stop pasting docs into ChatGPT page by page.
+ripdocs turns a whole docs site into one Markdown file.
 ---
-Stop copy-pasting docs into ChatGPT page by page. ripdocs grabs them all.
+Your AI can finally read the entire docs.
+ripdocs crawls the site and hands you one clean file.
 
-→ Crawls a whole docs site in one command
-→ Strips menus, footers and cookie banners
-→ Saves one tidy Markdown file
-
-Reply with the two posts only."""
+Reply with the two captions only."""
 
 
 def _split_variants(raw):
@@ -133,28 +130,20 @@ def _repo_brief(repo, readme):
 
 
 def fallback_post(repo, handle=None):
-    """Template draft used when no LLM is configured or the LLM fails."""
+    """Short template caption used when no LLM is configured or the LLM fails."""
     name = repo["full_name"].split("/", 1)[1]
-    desc = repo["description"].rstrip(".")
-    lic = repo.get("license") if repo.get("license") not in (None, "NOASSERTION") else "custom"
-    tail = [f"→ {repo.get('language') or 'Open source'} · {lic} license",
-            f"→ {repo['stars']:,} stars on GitHub"]
-    if handle:
-        tail.append(f"by @{handle}")
-
-    def build(d):
-        return "\n".join([f"{name}: {d}", ""] + tail)
-
-    text = build(desc + ".")
-    words = desc.split()
-    while x_length(text) > config.POST_MAX_CHARS and len(words) > 3:
+    desc = repo["description"].strip().rstrip(".")
+    first = re.split(r"(?<=[.!?])\s", desc)[0].rstrip(".")   # first sentence only
+    words = first.split()
+    line = f"{name}: {first}."
+    while x_length(line) > 120 and len(words) > 3:
         words = words[:-1]
-        text = build(" ".join(words) + "…")
-    return text
+        line = f"{name}: {' '.join(words)}…"
+    return line + (f"\nby @{handle}" if handle else "")
 
 
 def draft_post(repo, readme, handle=None):
-    credit = (f'End the post with "by @{handle}" on its own line (the maintainer).' if handle
+    credit = (f'Add "by @{handle}" (the maintainer) as an extra last line; it does not count toward the 120.' if handle
               else "Do not mention or tag any person or account.")
     messages = [
         {"role": "system", "content": POST_RULES.format(niche=config.NICHE, credit=credit)},
@@ -166,11 +155,12 @@ def draft_post(repo, readme, handle=None):
         variants = _split_variants(raw)
         if not variants:
             raise LLMError("empty draft")
-        if any(x_length(v) > config.POST_MAX_CHARS for v in variants):
+        if any(x_length(v) > CAPTION_RETRY_CHARS for v in variants):
             lengths = ", ".join(str(x_length(v)) for v in variants)
             messages += [{"role": "assistant", "content": raw},
-                         {"role": "user", "content": f"Those are {lengths} characters. Rewrite both under 240 "
-                                                     "characters with the same rules and the --- separator."}]
+                         {"role": "user", "content": f"Those are {lengths} characters. Make both shorter: at most "
+                                                     "120 characters each plus the credit line, same rules, "
+                                                     "same --- separator."}]
             variants = _split_variants(llm_chat(messages)) or variants
         used_llm = True
     except LLMError as e:
