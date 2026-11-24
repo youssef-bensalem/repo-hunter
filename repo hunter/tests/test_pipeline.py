@@ -130,11 +130,13 @@ def test_clean_readme():
     assert draft.clean_readme(md) == "# Tool\nDoes things."
 
 
-def test_fallback_post_fits():
-    r = repo("x/tool", desc="word " * 120, stars=12345)
+def test_fallback_post_is_a_short_caption():
+    r = repo("x/tool", desc="Turns any docs site into one Markdown file. Also does many other things " * 5)
     text = draft.fallback_post(r, "maker")
-    assert draft.x_length(text) <= 280 and "by @maker" in text and "12,345 stars" in text
-
+    first, credit = text.split("\n")
+    assert first == "tool: Turns any docs site into one Markdown file." and credit == "by @maker"
+    long = draft.fallback_post(repo("x/tool", desc="word " * 80))
+    assert draft.x_length(long) <= 120 and long.endswith("…") and "\n" not in long
 
 def test_draft_uses_llm_and_retries_when_too_long(monkeypatch):
     monkeypatch.setattr(config, "LLM_API_KEY", "k")
@@ -156,6 +158,7 @@ def test_draft_falls_back_without_key(monkeypatch):
     monkeypatch.setattr(config, "LLM_API_KEY", "")
     out = draft.draft_post(repo("x/tool"), "readme")
     assert out["used_llm"] is False and "template draft" in out["warning"] and out["text"].startswith("tool:")
+    assert out["alt"] is None
 
 
 def test_llm_retries_on_429(monkeypatch):
@@ -400,4 +403,20 @@ def test_short_description_and_noassertion():
     assert score.reject_reason(repo("x/chat-demo", desc="Chat Demo."), {}, NOW) == "description too short"
     r = repo("x/tool", desc="A tool that does useful things")
     r["license"] = "NOASSERTION"
-    assert "custom license" in draft.fallback_post(r) and "NOASSERTION" not in draft.fallback_post(r)
+    assert "NOASSERTION" not in draft.fallback_post(r)
+
+
+def test_caption_prompt_and_retry_threshold(monkeypatch):
+    monkeypatch.setattr(config, "LLM_API_KEY", "k")
+    sent, replies = [], iter(["Hook one that is fine.\nrepo does X.\n---\n" + "y" * 170,
+                              "Short hook.\nrepo does X.\nby @maker\n---\nOther angle.\nby @maker"])
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        sent.append(json)
+        return FakeResp(data={"choices": [{"message": {"content": next(replies)}}]})
+    monkeypatch.setattr(draft.requests, "post", fake_post)
+    out = draft.draft_post(repo("x/tool"), "readme", "maker")
+    assert len(sent) == 2                                   # 170 chars > 160 -> one shorter rewrite
+    assert "120 characters" in sent[0]["messages"][0]["content"]
+    assert '"by @maker"' in sent[0]["messages"][0]["content"]
+    assert out["text"] == "Short hook.\nrepo does X.\nby @maker" and out["alt"] == "Other angle.\nby @maker"
