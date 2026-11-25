@@ -547,11 +547,11 @@ def test_doctor_report(monkeypatch, tmp_path):
     monkeypatch.setattr(main.requests, "get", net)
     problems = main.run_doctor()
     report = sent[0][1][0]["content"]
-    assert problems == 1 and sent[0][2] is False
-    assert "❌ Main AI failed" in report and "Fix: The API key is wrong" in report
+    assert problems == 0 and sent
+    assert "⚠️ Main AI failed" in report and "Fix: The API key is wrong" in report and "Covered" in report
     assert "✅ Backup AI works: model `openai/gpt-oss-120b`" in report
     assert "✅ Post images render" in report and "✅ GitHub API works (WITHOUT token: 990/1000" in report
-    assert "1 problem(s) found" in report
+    assert "All good" in report
     assert "✅ Hacker News reachable" in report and "ℹ️ Reddit not reachable" in report
 
 
@@ -853,3 +853,55 @@ def test_all_models_busy_gives_clear_error(monkeypatch):
 def test_doctor_mode_exits_green(monkeypatch, capsys):
     monkeypatch.setattr(main, "run_doctor", lambda dry_run=False: 3)
     assert main.main(["doctor"]) is None          # no SystemExit(1) even with problems
+
+
+def test_failed_provider_is_skipped_for_rest_of_run(monkeypatch):
+    _llm_env(monkeypatch, backup=True)
+    monkeypatch.setattr(draft, "_down", {})
+    monkeypatch.setattr(config, "LLM_MODEL", "gemini-flash-latest")
+    hits = {"main": 0, "backup": 0}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        if url.startswith("https://main"):
+            hits["main"] += 1
+            return FakeResp(503, None, text=GEMINI_503)
+        hits["backup"] += 1
+        return _ok("from groq")
+    monkeypatch.setattr(draft.requests, "post", fake_post)
+    monkeypatch.setattr(draft.requests, "get", lambda url, headers=None, timeout=None:
+                        FakeResp(data={"data": [{"id": m} for m in (GEMINI_MODELS if "main" in url else GROQ_MODELS)]}))
+    assert draft.llm_chat([]) == "from groq"
+    first = hits["main"]
+    assert first == 9                                   # 3 models x 3 tries, once
+    for _ in range(4):
+        assert draft.llm_chat([]) == "from groq"
+    assert hits["main"] == first and hits["backup"] == 5   # Gemini not retried for the next captions
+
+
+def test_doctor_warns_instead_of_failing_when_backup_covers(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "DISCORD_WEBHOOK_URL", "")
+    monkeypatch.setattr(config, "GITHUB_TOKEN", "")
+    _llm_env(monkeypatch, backup=True)
+    monkeypatch.setattr(config, "LLM_MODEL", "gemini-flash-latest")
+
+    class S:
+        def get(self, url, timeout=None):
+            return FakeResp(data={"resources": {"core": {"remaining": 1, "limit": 1}}})
+    monkeypatch.setattr(main, "gh_session", lambda token: S())
+
+    def net(url, headers=None, timeout=None):
+        if url.endswith("/models"):
+            return FakeResp(data={"data": [{"id": m} for m in (GEMINI_MODELS if "main" in url else GROQ_MODELS)]})
+        return FakeResp(data={})
+    monkeypatch.setattr(main.requests, "get", net)
+    monkeypatch.setattr(draft.requests, "post", lambda url, json=None, headers=None, timeout=None:
+                        FakeResp(503, None, text=GEMINI_503) if url.startswith("https://main") else _ok("OK"))
+    out = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: out.append(" ".join(map(str, a))))
+    problems = main.run_doctor(dry_run=True)
+    report = "\n".join(out)
+    assert "⚠️ Main AI failed" in report and "Covered: the other AI" in report and "✅ Backup AI works" in report
+    assert "also tried gemini-2.5-flash, gemini-3-flash-preview" in report        # no longer cut off
+    assert "❌ Main AI" not in report
+    assert problems == 1    # the missing Discord webhook in this test; the AI is not counted
