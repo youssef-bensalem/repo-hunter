@@ -804,3 +804,52 @@ def test_weekly_skips_picks_that_todays_filters_reject(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "send", lambda url, msgs, dry_run=False: None)
     tweets = main.run_weekly(now=NOW)
     assert any("tool" in t for t in tweets) and not any("leonida" in t.lower() for t in tweets)
+
+
+# ---------- overload handling (real Gemini 503 from the doctor report) ----------
+
+GEMINI_503 = ('[{\n  "error": {\n    "code": 503,\n    "message": "This model is currently experiencing high demand. '
+              'Spikes in demand are usually temporary. Please try again later.",\n    "status": "UNAVAILABLE"\n  }\n}\n]')
+
+
+def test_explain_overload_is_not_a_model_name_problem():
+    hint = draft.explain(f"gave up after 3 tries (HTTP 503: {GEMINI_503})")
+    assert "overloaded" in hint and "model name" not in hint and "key works" in hint
+    assert "model name is wrong" in draft.explain('HTTP 404: {"message": "models/gemini-x is not found for API version"}')
+    assert "model name is wrong" not in draft.explain("HTTP 400: model output was blocked")
+
+
+def test_busy_model_switches_to_another(monkeypatch):
+    _llm_env(monkeypatch)
+    monkeypatch.setattr(config, "LLM_MODEL", "gemini-flash-latest")
+    used = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        used.append(json["model"])
+        if json["model"] == "gemini-flash-latest":
+            return FakeResp(503, None, text=GEMINI_503)
+        return _ok("caption")
+    monkeypatch.setattr(draft.requests, "post", fake_post)
+    monkeypatch.setattr(draft.requests, "get", lambda url, headers=None, timeout=None:
+                        FakeResp(data={"data": [{"id": m} for m in GEMINI_MODELS]}))
+    assert draft.llm_chat([{"role": "user", "content": "hi"}]) == "caption"
+    assert used == ["gemini-flash-latest"] * 3 + ["gemini-2.5-flash"]
+    assert draft.llm_chat([]) == "caption" and used[-1] == "gemini-2.5-flash"     # sticks for the run
+
+
+def test_all_models_busy_gives_clear_error(monkeypatch):
+    _llm_env(monkeypatch)
+    monkeypatch.setattr(config, "LLM_MODEL", "gemini-flash-latest")
+    monkeypatch.setattr(draft.requests, "post", lambda *a, **k: FakeResp(503, None, text=GEMINI_503))
+    monkeypatch.setattr(draft.requests, "get", lambda url, headers=None, timeout=None:
+                        FakeResp(data={"data": [{"id": m} for m in GEMINI_MODELS]}))
+    with pytest.raises(draft.LLMError) as e:
+        draft.llm_chat([])
+    msg = str(e.value)
+    assert "HTTP 503" in msg and "also tried gemini-2.5-flash, gemini-3-flash-preview" in msg
+    assert "overloaded" in draft.explain(draft.LAST_ERROR)
+
+
+def test_doctor_mode_exits_green(monkeypatch, capsys):
+    monkeypatch.setattr(main, "run_doctor", lambda dry_run=False: 3)
+    assert main.main(["doctor"]) is None          # no SystemExit(1) even with problems
