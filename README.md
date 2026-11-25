@@ -1,85 +1,75 @@
 # repo-hunter
 
-Every morning this finds fast-rising GitHub repos, drafts an X post for each one, and sends the
-top 5 to a Discord channel. You pick 1–2, check them, and post them yourself. On Sundays it also
-drafts a thread from the week's best picks.
+Every morning this finds fast-rising GitHub repos and sends the best 5 to Discord. Each one comes with a
+ready-to-post image, two short hook captions (A and B) and a copy-paste first reply. You pick one, check the
+repo, and post it on X yourself.
 
 ```
 GitHub search ─┐
-Show HN ───────┼─► collect.py ─► score.py ─► draft.py ─► notify.py ─► Discord ─► you post on X
-Reddit ────────┘   (candidates)  (filter +    (LLM or     (webhook)
-                                  rank)        template)
+Show HN ───────┼─► collect.py ─► score.py ─► draft.py ─► card.py ─► notify.py ─► Discord ─► you post on X
+Reddit ────────┘   candidates    filter,      captions    images     webhook
+                                 rank, label  (AI)
 ```
 
-**Cost: $0.** GitHub Actions is free (unlimited on public repos, ~3 of your 2,000 free minutes a
-day on private ones), and the GitHub API, Discord webhooks and the Gemini free tier are all free.
+**Cost: $0.** GitHub Actions, the GitHub API, Discord webhooks and the free tiers of Gemini/Groq.
 
-## Setup (about 10 minutes)
+## Modes (Actions → repo-hunter → Run workflow)
 
-1. **Create a GitHub repo** and push these files to it.
-2. **Discord webhook:** in your server, open *Server Settings → Integrations → Webhooks → New Webhook*,
-   choose the channel, then *Copy Webhook URL*.
-3. **LLM key (optional but recommended):** create a free Gemini API key in Google AI Studio.
-   Without a key the bot still works and uses simple template drafts.
-4. **Add the secrets** in the repo under *Settings → Secrets and variables → Actions → New repository secret*:
-   - `DISCORD_WEBHOOK_URL`
-   - `LLM_API_KEY`
-5. **Test it:** open the *Actions* tab → **repo-hunter** → *Run workflow*. Drafts should show up in
-   Discord within about a minute.
+| Mode | What it does | When |
+|---|---|---|
+| `daily` | 5 new repos with images and captions | every day 07:00 (UTC+1), automatically |
+| `weekly` | a thread draft of the week's best + a cover image | Sundays 18:00, automatically |
+| `doctor` | checks every part of the bot, posts a ✅/❌ report with fixes | whenever something looks wrong |
+| `backfill` | the best repos of the last N days (set `days` and `count` in the form) | to fill your queue |
 
-After that it runs every day at 07:00 (UTC+1) and on Sundays at 18:00 for the thread.
-To change the times, edit the `cron` lines in `.github/workflows/repo-hunter.yml` (they're in UTC).
+## What you get in Discord, per repo
+- the **image** (1600×900): repo name, description, stars, language, license, the repo's **logo** if it has
+  one, and its **install command** as a terminal line
+- **Option A / Option B**: two short hook captions (1–2 lines)
+- 🏷️ the **category** and what it's an **alternative to**, if anything
+- a **first reply** block with the GitHub link (and website) to paste under your post
+- 🏆 on the best pick of the day, 🚩 when a repo needs a closer look (bought stars, fork farms)
+- at the top, a ⚠️ banner explaining any problem (AI failing, GitHub not answering) and how to fix it
 
-## Daily routine (~15 min)
+## Setup
+Secrets (Settings → Secrets and variables → Actions → Secrets):
+- `DISCORD_WEBHOOK_URL`: Discord → Server Settings → Integrations → Webhooks → Copy Webhook URL
+- `LLM_API_KEY`: a free Gemini key from aistudio.google.com → Get API key
+- `LLM2_API_KEY` *(optional backup AI)*: a free Groq key from console.groq.com. Used when Gemini fails.
 
-1. Open Discord and pick 1–2 drafts.
-2. **Open the repo and skim the README and code.** A 🚩 means stars are coming in unusually fast,
-   which is common with bought stars and malware-bait repos (fake game ports, "cracked" tools).
-   Never post a repo you haven't opened.
-3. Rewrite the hook in your own words, then post it with the preview image
-   (`opengraph.githubassets.com/...` from the embed) or your own screenshot.
-4. Put the GitHub link in the **first reply**, not in the post itself.
-5. If the post shows `by @handle`, keep it: maintainers often repost.
-
-## Settings
-
-Set these as repository **variables** (*Settings → Secrets and variables → Actions → Variables*).
-Anything left unset uses the default from `config.py`.
+Variables (same page → Variables), all optional:
 
 | Variable | Default | What it does |
 |---|---|---|
-| `NICHE` | devs, students, AI/ML builders | Tells the LLM who the posts are for |
-| `TOPICS` | *(none)* | Extra searches, comma-separated, e.g. `self-hosted,llm,cli` |
-| `MIN_STARS` | `100` | Minimum stars for the main search |
-| `TOP_N` | `5` | Drafts per day |
-| `LLM_MODEL` | `gemini-flash-latest` | Model name |
-| `LLM_BASE_URL` | Gemini's OpenAI-compatible URL | Change this to use another provider |
+| `ACCOUNT_HANDLE` | none | your X handle, printed on the images |
+| `TOP_N` | 5 | drafts per day |
+| `MIN_STARS` | 100 | minimum stars for the daily search |
+| `TOPICS` | none | extra searches, e.g. `self-hosted,llm,cli` |
+| `NICHE` | devs, students, AI builders | who the captions are written for |
+| `LLM_MODEL` | `gemini-flash-latest` | remove it to let the bot pick a model itself |
+| `SKIP_GAME_PORTS` | true | skip GTA/console ports, emulators and game recompilations |
+| `MAX_PER_CATEGORY` | 2 | variety: max repos of one category per day |
+| `OWNER_COOLDOWN_DAYS` | 3 | don't feature the same owner again within N days |
+| `ALTERNATIVE_BOOST` | 1.3 | score bonus for "alternative to X" repos |
 
-More settings in `config.py`: `DAYS_BACK`, `SUBREDDITS`, `MAX_INACTIVE_DAYS`, `ENGLISH_ONLY`,
-the exclude patterns, and `SUSPICIOUS_STARS_PER_DAY`.
+More in `config.py`.
 
-**Other free LLMs:** any OpenAI-compatible API works. For Groq, set `LLM_BASE_URL` to
-`https://api.groq.com/openai/v1` and `LLM_MODEL` to a model from their docs. If Gemini returns a
-"model not found" error, set `LLM_MODEL` to a current model name from the Gemini docs.
+## How repos are chosen
+- **Dropped:** already sent; archived; forks; no license; descriptions under 3 words; inactive for 30 days;
+  READMEs under 500 characters; awesome-lists, dotfiles, homework; spam/malware keywords; non-English;
+  re-uploads/mirrors of other repos; game ports and console emulators.
+- **Score:** stars per day since creation. +50% per Hacker News/Reddit mention, +30% for "alternative to X".
+- **Variety:** one repo per owner per day, no owner again within 3 days, max 2 per category.
 
-## How repos are filtered and ranked
-
-- **Dropped:** already sent, archived, forks, no license, no description, no push in 30 days,
-  a README under 500 characters, awesome-lists, dotfiles, homework, spam/malware keywords, and
-  non-English descriptions.
-- **Score** = stars per day since the repo was created. A repo that is also on Show HN or Reddit
-  gets +50% per community source, and its age is capped at 30 days, so an older repo that's
-  suddenly being discussed can still rank.
-- Sent repos are recorded in `data/seen.json` (the workflow commits it back), so they never repeat.
+## Troubleshooting
+Run the `doctor` mode first. Its report says what's wrong and how to fix it. If a run crashes, the error is
+also posted to Discord.
 
 ## Run locally
-
 ```bash
 pip install -r requirements.txt
-python main.py daily --dry-run          # prints drafts, sends nothing, changes nothing
-python main.py weekly --dry-run
+python main.py daily --dry-run            # prints everything, sends nothing, changes nothing
+python main.py doctor --dry-run
+python main.py backfill --dry-run --days 30 --count 10
 pip install pytest && python -m pytest -q
 ```
-
-Set `GITHUB_TOKEN` (any personal token, no scopes needed) to avoid the 60-requests/hour
-anonymous limit, and `LLM_API_KEY` for LLM drafts.
