@@ -198,5 +198,70 @@
     "score": 202.83,
     "text": "WinRust: Windows shell replacement in Rust: taskbar, file manager, NTFS search, task manager, disk cleaner.",
     "date": "2026-11-24"
+  },
+  {
+    "full_name": "Indigo-0167/universal-game-mod-manager",
+    "url": "https://github.com/Indigo-0167/universal-game-mod-manager",
+    "description": "Free Windows game mod manager to discover, install, update and manage universal Unity and Unreal Engine mods.",
+    "stars": 1300,
+    "language": "Rust",
+    "license": "MIT",
+    "install": null,
+    "category": "Desktop app",
+    "score": 715.81,
+    "text": "universal-game-mod-manager: Free Windows game mod manager to discover, install, update and manage universal Unity and…",
+    "date": "2026-11-25"
+  },
+  {
+    "full_name": "Umbra9179/clipboard-history-manager-windows",
+    "url": "https://github.com/Umbra9179/clipboard-history-manager-windows",
+    "description": "Free open-source Windows clipboard manager with searchable history, image previews, tags, editing and backup.",
+    "stars": 1265,
+    "language": "C#",
+    "license": "MIT",
+    "install": null,
+    "category": "Design & media",
+    "score": 699.24,
+    "text": "Never lose a snippet – searchable history, tags, edit, backup.  \nclipboard-history-manager-windows saves everything locally.",
+    "date": "2026-11-25"
+  },
+  {
+    "full_name": "zero5122/offline-file-converter-windows",
+    "url": "https://github.com/zero5122/offline-file-converter-windows",
+    "description": "Free offline file converter for Windows – convert PDF, documents, images, audio and video privately.",
+    "stars": 1062,
+    "language": "Python",
+    "license": "MIT",
+    "install": null,
+    "category": "Design & media",
+    "score": 586.7,
+    "text": "offline-file-converter-windows: Free offline file converter for Windows – convert PDF, documents, images, audio and…",
+    "date": "2026-11-25"
+  },
+  {
+    "full_name": "solv4626/steam-achievement-manager-windows",
+    "url": "https://github.com/solv4626/steam-achievement-manager-windows",
+    "description": "Free open-source Steam Achievement Manager for Windows to manage game achievements and edit Steam game statistics.",
+    "stars": 1063,
+    "language": "Rust",
+    "license": "MIT",
+    "install": null,
+    "category": "Productivity",
+    "score": 585.63,
+    "text": "Stop hunting achievements in each game’s page.  \nSteam Achievement Manager unlocks, relocks, edits stats in one GUI.",
+    "date": "2026-11-25"
+  },
+  {
+    "full_name": "rowanbyte3329/stardew-valley-mod-manager",
+    "url": "https://github.com/rowanbyte3329/stardew-valley-mod-manager",
+    "description": "Free open-source Stardew Valley mod manager for Windows with SMAPI support, mod updates, and custom mod profiles.",
+    "stars": 871,
+    "language": "C#",
+    "license": "MIT",
+    "install": null,
+    "category": "Productivity",
+    "score": 478.03,
+    "text": "Stop juggling mod folders.  \nStardew Valley Mod Manager lets you enable/disable SMAPI mods from a single GUI.",
+    "date": "2026-11-25"
   }
 ]
