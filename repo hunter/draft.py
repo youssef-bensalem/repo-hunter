@@ -99,9 +99,13 @@ def explain(error):
                 "then replace the LLM_API_KEY secret. Paste only the key, no spaces or quotes.")
     if re.search(r"location|region|FAILED_PRECONDITION", e, re.I):
         return "This provider refuses requests from GitHub's servers' region. Add a backup provider (LLM2_API_KEY)."
-    if re.search(r"HTTP 429|RESOURCE_EXHAUSTED|quota|rate", e, re.I):
+    if re.search(r"HTTP 50[0234]|UNAVAILABLE|overloaded|high demand|try again later", e, re.I):
+        return ("The AI provider is overloaded right now. That's temporary and not a setup problem: your key "
+                "works. The bot already tries other models; add a free Groq key as the LLM2_API_KEY secret so "
+                "captions never fall back to the template.")
+    if re.search(r"HTTP 429|RESOURCE_EXHAUSTED|quota|rate.?limit", e, re.I):
         return "Free-tier limit reached (resets daily). Lower TOP_N or add a backup provider (LLM2_API_KEY)."
-    if re.search(r"HTTP 404|not found|does not exist|model", e, re.I):
+    if re.search(r"HTTP 404|model\W.{0,60}(not found|does not exist|not supported)|unknown model", e, re.I):
         return "The model name is wrong. Remove the LLM_MODEL variable to let the bot pick one automatically."
     if re.search(r"HTTP 400", e):
         return "The provider rejected the request. Check LLM_BASE_URL matches the key's provider."
@@ -113,23 +117,24 @@ def _post(p, body):
                          headers={"Authorization": f"Bearer {p['key']}"}, timeout=90)
 
 
-def _chat_one(p, messages, max_tokens, temperature):
-    model = _picked.get(p["base"]) or p["model"]
-    if not model:
-        model = _picked[p["base"]] = pick_model(list_models(p))
+class _Busy(Exception):
+    """The model is overloaded or out of quota: worth trying another model."""
+
+
+def _try_model(p, model, messages, max_tokens, temperature):
     body = {"model": model, "messages": messages, "temperature": temperature,
             "max_tokens": max_tokens}  # generous: thinking models use tokens too
-    last, repicked = "unknown error", False
+    last, busy, repicked = "unknown error", False, False
     for attempt in range(3):
         try:
             r = _post(p, body)
         except requests.RequestException as e:
-            last = str(e)
+            last, busy = str(e), False
             time.sleep(5 * (attempt + 1))
             continue
         if r.status_code in (429, 500, 502, 503, 504):
-            last = f"HTTP {r.status_code}: {r.text[:200]}"
-            time.sleep(10 * (attempt + 1))
+            last, busy = f"HTTP {r.status_code}: {r.text[:200]}", True
+            time.sleep(5 * (attempt + 1))
             continue
         if r.status_code in (400, 404) and not repicked and re.search(r"model", r.text, re.I) \
                 and not re.search(r"API.?KEY|api key", r.text, re.I):
@@ -150,8 +155,35 @@ def _chat_one(p, messages, max_tokens, temperature):
             raise LLMError(f"unexpected response: {r.text[:300]}")
         if not content or not content.strip():
             raise LLMError("empty response")
+        _picked[p["base"]] = model
         return content.strip()
+    if busy:
+        raise _Busy(f"gave up after 3 tries ({last})")
     raise LLMError(f"gave up after 3 tries ({last})")
+
+
+def _chat_one(p, messages, max_tokens, temperature, max_models=3):
+    """Ask one provider. If its model is overloaded or out of quota, try other models it offers."""
+    model = _picked.get(p["base"]) or p["model"]
+    if not model:
+        model = _picked[p["base"]] = pick_model(list_models(p))
+    tried = []
+    while True:
+        try:
+            return _try_model(p, model, messages, max_tokens, temperature)
+        except _Busy as e:
+            tried.append(model)
+            alt = None
+            if len(tried) < max_models:
+                try:
+                    alt = pick_model([m for m in list_models(p) if m.removeprefix("models/") not in tried])
+                except (requests.RequestException, ValueError):
+                    alt = None
+            if not alt:
+                also = f"; also tried {', '.join(tried[1:])}" if len(tried) > 1 else ""
+                raise LLMError(f"{e}{also}")
+            print(f"[info] {model!r} on the {p['label']} provider is busy, switching to {alt!r}")
+            model = _picked[p["base"]] = alt
 
 
 def llm_chat(messages, max_tokens=2048, temperature=0.7):

@@ -44,3 +44,9 @@
 - The Sunday thread re-checks past picks against the current filters, so the GTA 6 repos sent on Nov 23-24
   (before the game-port filter existed) never make it into a thread.
 - README rewritten for all modes and settings.
+
+## Update 8
+- **Overloaded AI models**: when Gemini answers "503 high demand" or "429 quota", the bot now switches to
+  another model from Gemini's own list (up to 3) instead of falling back to the template.
+- Fixed the doctor's hint for 503 errors: it wrongly said "the model name is wrong".
+- `doctor` finishes green and also prints its report in the Actions log.

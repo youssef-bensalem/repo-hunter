@@ -255,7 +255,9 @@ def run_doctor(dry_run=False):
     check(True, f"{len(seen)} repos sent so far, last daily run: {last}")
     lines.append("\n**All good.**" if not problems else f"\n**{problems} problem(s) found.** Fix the ❌ lines above.")
     report = "\n".join(lines)
-    send(config.DISCORD_WEBHOOK_URL, [{"content": report[:2000]}], dry_run=dry_run or not config.DISCORD_WEBHOOK_URL)
+    print(report)                              # also in the Actions log
+    if config.DISCORD_WEBHOOK_URL and not dry_run:
+        send(config.DISCORD_WEBHOOK_URL, [{"content": report[:2000]}])
     return problems
 
 
@@ -280,8 +282,9 @@ def main(argv=None):
     p.add_argument("--dry-run", action="store_true", help="print instead of sending; don't update data/")
     args = p.parse_args(argv)
 
-    if args.mode == "doctor":
-        sys.exit(1 if run_doctor(dry_run=args.dry_run) else 0)
+    if args.mode == "doctor":      # the report is the result: finish green even when it lists problems
+        run_doctor(dry_run=args.dry_run)
+        return
     if not args.dry_run and not config.DISCORD_WEBHOOK_URL:
         sys.exit("DISCORD_WEBHOOK_URL is not set. Add it as a secret, or use --dry-run to print instead.")
     try:
