@@ -60,6 +60,7 @@ def providers():
 
 
 _picked = {}          # base url -> model chosen automatically this run
+_down = {}            # base url -> error, for providers that failed after all retries this run
 LAST_ERROR = None     # last LLM error of this run, for the Discord banner and the doctor report
 
 _SKIP_MODEL = re.compile(r"embed|tts|audio|image|imagen|veo|live|guard|whisper|transcri|moderation|search|realtime|"
@@ -195,10 +196,15 @@ def llm_chat(messages, max_tokens=2048, temperature=0.7):
         raise LLMError(LAST_ERROR)
     errors = []
     for p in ps:
+        if p["base"] in _down and len(ps) > 1:    # failed earlier this run: don't waste minutes retrying
+            errors.append(f"{p['label']}: skipped, failed earlier this run ({_down[p['base']][:120]})")
+            continue
         try:
             return _chat_one(p, messages, max_tokens, temperature)
         except (LLMError, requests.RequestException, ValueError) as e:
             errors.append(f"{p['label']}: {e}")
+            if "gave up" in str(e):               # busy/unreachable after retries (not a one-off bad reply)
+                _down[p["base"]] = str(e)
     LAST_ERROR = " | ".join(errors)
     raise LLMError(LAST_ERROR)
 

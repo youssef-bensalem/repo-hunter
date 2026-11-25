@@ -50,3 +50,8 @@
   another model from Gemini's own list (up to 3) instead of falling back to the template.
 - Fixed the doctor's hint for 503 errors: it wrongly said "the model name is wrong".
 - `doctor` finishes green and also prints its report in the Actions log.
+
+## Update 9
+- If the main AI fails after all retries, the bot skips it for the rest of that run and goes straight to the
+  backup, instead of losing about 1.5 minutes per caption retrying Gemini.
+- `doctor` shows ⚠️ (not ❌) for an AI that's down when the other one works, and no longer cuts the error off.

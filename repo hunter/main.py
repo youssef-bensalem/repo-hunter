@@ -5,6 +5,7 @@
     python main.py daily --dry-run    # print to the terminal, change nothing
 """
 import argparse
+import re
 import datetime as dt
 import json
 import os
@@ -215,14 +216,24 @@ def run_doctor(dry_run=False):
     ps = draft.providers()
     if not ps:
         check(False, "No AI key: captions use the template.\n   ↳ Fix: " + draft.explain("not set"))
+    ai_results = []
     for p in ps:
         try:
             reply = draft._chat_one(p, [{"role": "user", "content": "Reply with the single word OK."}], 512, 0)
             model = draft._picked.get(p["base"]) or p["model"]
-            check(True, f"{p['label'].title()} AI works: model `{model}` at {p['base']} (replied {reply[:20]!r})")
+            ai_results.append((True, f"{p['label'].title()} AI works: model `{model}` at {p['base']} "
+                                     f"(replied {reply[:20]!r})"))
         except Exception as e:
-            err = str(e).replace("`", "'")[:250]
-            check(False, f"{p['label'].title()} AI failed at {p['base']}: `{err}`\n   ↳ Fix: {draft.explain(err)}")
+            err = str(e).replace("`", "'")
+            short = re.sub(r"\s+", " ", err)[:300]
+            ai_results.append((False, f"{p['label'].title()} AI failed at {p['base']}: `{short}`\n"
+                                      f"   ↳ Fix: {draft.explain(err)}"))
+    any_ai = any(ok for ok, _ in ai_results)
+    for ok, text in ai_results:
+        if ok or not any_ai:
+            check(ok, text)
+        else:            # another provider covers it: a warning, not a problem
+            lines.append("⚠️ " + text + "\n   ↳ Covered: the other AI writes the captions meanwhile.")
     if len(ps) == 1:
         lines.append("ℹ️ No backup AI. Optional: add a free Groq key as the LLM2_API_KEY secret.")
 
