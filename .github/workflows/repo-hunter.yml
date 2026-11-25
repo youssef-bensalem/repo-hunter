@@ -8,8 +8,14 @@ on:
     inputs:
       mode:
         type: choice
-        options: [daily, weekly]
+        options: [daily, weekly, doctor, backfill]
         default: daily
+      days:
+        description: "backfill only: how many days back"
+        default: "50"
+      count:
+        description: "backfill only: how many repos"
+        default: "20"
 
 permissions:
   contents: write          # to commit data/seen.json and data/history.json
@@ -19,14 +25,14 @@ concurrency: repo-hunter
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: "repo hunter"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -40,11 +46,16 @@ jobs:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
           LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM2_API_KEY: ${{ secrets.LLM2_API_KEY }}
+          LLM2_BASE_URL: ${{ vars.LLM2_BASE_URL }}
+          LLM2_MODEL: ${{ vars.LLM2_MODEL }}
           NICHE: ${{ vars.NICHE }}
           TOPICS: ${{ vars.TOPICS }}
           MIN_STARS: ${{ vars.MIN_STARS }}
           TOP_N: ${{ vars.TOP_N }}
           ACCOUNT_HANDLE: ${{ vars.ACCOUNT_HANDLE }}
+          BACKFILL_DAYS: ${{ inputs.days }}
+          BACKFILL_COUNT: ${{ inputs.count }}
           MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '0 17 * * 0' && 'weekly' || 'daily') }}
         run: python main.py "$MODE"
 
