@@ -188,6 +188,38 @@ def find_logo_urls(readme, repo, limit=4):
     return found[:limit]
 
 
+# ---------- install command ----------
+
+_INSTALL_RE = re.compile(
+    r"^(?:\$|>|#)?\s*("
+    r"brew install(?: --cask)? [\w@./+-]+"
+    r"|(?:pipx|uv tool) install [\w@.\[\]=<>~-]+|uvx [\w@.-]+"
+    r"|pip3? install(?: -U| --upgrade)? [\w@.\[\]=<>~-]+"
+    r"|(?:npm (?:i|install) -g|pnpm (?:add|i) -g|bun (?:add|i) -g|yarn global add) [\w@./-]+"
+    r"|npx(?: -y)? [\w@./-]+(?: [\w-]+)?"
+    r"|cargo install(?: --locked)? [\w-]+|cargo binstall [\w-]+"
+    r"|go install [\w./-]+@[\w.]+"
+    r"|(?:winget|scoop|choco) install(?: -e --id)? [\w.-]+"
+    r"|docker run(?: -[-\w=]+)*(?: -p \d+:\d+)? [\w./:-]+"
+    r")\s*$", re.M)
+_INSTALL_PRIORITY = ("brew", "pipx", "uv", "cargo", "winget", "scoop", "choco", "go ", "npm", "pnpm", "bun",
+                     "yarn", "pip", "npx", "docker")
+
+
+def find_install(readme, repo, max_len=44):
+    """A short, copy-pasteable install command from the README, or None."""
+    name = repo["full_name"].split("/", 1)[1].lower()
+    found = []
+    for m in _INSTALL_RE.finditer(readme or ""):
+        cmd = re.sub(r"\s+", " ", m.group(1)).strip()
+        low = cmd.lower()
+        if len(cmd) > max_len or re.search(r"[<>]|requirements|pip3? install -e\b|\.\s*$|\byour\b|example", low):
+            continue
+        rank = next((i for i, k in enumerate(_INSTALL_PRIORITY) if low.startswith(k)), len(_INSTALL_PRIORITY))
+        found.append((0 if name in low else 1, rank, m.start(), cmd))
+    return min(found)[3] if found else None
+
+
 def _svg_to_image(data):
     try:
         import cairosvg
@@ -303,11 +335,22 @@ def render_card(repo, path, accent=None, handle=None, logo=None):
     d.text((PAD, y), name_text, font=f_name, fill=WHITE)
     y += f_name.size + 44
 
-    # description
+    # description (one line shorter when an install command needs the room)
+    install = repo.get("install")
     f_desc = font("Regular", 40)
-    for line in wrap(d, clean_text(repo.get("description")), f_desc, width, 4):
+    for line in wrap(d, clean_text(repo.get("description")), f_desc, width, 3 if install else 4):
         d.text((PAD, y), line, font=f_desc, fill=TEXT)
         y += 58
+
+    if install:                          # terminal-style install line
+        f_cmd = font("Bold", 30)
+        cmd = _truncate(d, install, f_cmd, width - 90)
+        box_w = int(d.textlength("$ " + cmd, font=f_cmd)) + 48
+        top = min(y + 18, H - PAD - 64 - 24 - 60)
+        d.rounded_rectangle([PAD, top, PAD + box_w, top + 60], radius=10, fill=(17, 22, 29), outline=(31, 39, 50),
+                            width=2)
+        d.text((PAD + 24, top + 30), "$ ", font=f_cmd, fill=accent, anchor="lm")
+        d.text((PAD + 24 + d.textlength("$ ", font=f_cmd), top + 30), cmd, font=f_cmd, fill=WHITE, anchor="lm")
 
     # chips: stars, language, license
     by, ch = H - PAD - 64, 64
@@ -341,5 +384,68 @@ def render_card(repo, path, accent=None, handle=None, logo=None):
     _reticle(d, lx, ly, lr, accent, 5)
     d.ellipse([lx - 7, ly - 7, lx + 7, ly + 7], fill=WHITE)   # small sizes: a dot reads better than the branch
 
+    img.save(path, "PNG", optimize=True)
+    return path
+
+
+# ---------- weekly thread cover ----------
+
+def render_cover(items, path, title=None, accent=None, handle=None):
+    """One image for the weekly thread: a title and the week's picks as small cards."""
+    accent_rgb = _hex(accent or config.CARD_ACCENT)
+    handle = (config.ACCOUNT_HANDLE if handle is None else handle).lstrip("@")
+    items = items[:6]
+    title = title or f"{len(items)} open-source finds this week"
+    img = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(img)
+    for x in range(16, W, 32):
+        for y in range(16, H, 32):
+            d.ellipse([x - 1.5, y - 1.5, x + 1.5, y + 1.5], fill=DOT)
+
+    f_prompt = font("Regular", 28)
+    d.text((PAD, 64), "~/open-source $ ", font=f_prompt, fill=accent_rgb)
+    d.text((PAD + d.textlength("~/open-source $ ", font=f_prompt), 64), "repo-hunter --weekly", font=f_prompt,
+           fill=MUTED)
+    title_text, f_title = fit_line(d, title, "ExtraBold", 72, 44, W - 2 * PAD)
+    d.text((PAD, 108), title_text, font=f_title, fill=WHITE)
+
+    brand = "Repo Hunter" + (f"  @{handle}" if handle else "")
+    f_brand = font("Bold", 26)
+    by_ = 80                                  # same line as the prompt, clear of the title
+    bw = d.textlength(brand, font=f_brand)
+    d.text((W - PAD, by_), brand, font=f_brand, fill=WHITE, anchor="rm")
+    _reticle(d, W - PAD - bw - 36, by_, 18, accent_rgb, 4)
+    d.ellipse([W - PAD - bw - 42, by_ - 6, W - PAD - bw - 30, by_ + 6], fill=WHITE)
+
+    if not items:
+        img.save(path, "PNG", optimize=True)
+        return path
+    cols = 3 if len(items) > 4 else 2
+    rows = -(-len(items) // cols)
+    gap, top = 24, 248
+    tw = (W - 2 * PAD - (cols - 1) * gap) // cols
+    th = tw * 9 // 16
+    if top + rows * th + (rows - 1) * gap > H - 48:        # keep inside the image
+        th = (H - 48 - top - (rows - 1) * gap) // rows
+        tw = th * 16 // 9
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="cover-")
+    for i, it in enumerate(items):
+        r, c = divmod(i, cols)
+        in_row = min(cols, len(items) - r * cols)            # center a shorter last row
+        x0 = (W - (in_row * tw + (in_row - 1) * gap)) // 2 + c * (tw + gap)
+        y0 = top + r * (th + gap)
+        repo = {"full_name": it["full_name"], "description": it.get("description", ""),
+                "stars": it.get("stars", 0), "language": it.get("language"), "license": it.get("license"),
+                "install": it.get("install")}
+        mini = Image.open(render_card(repo, os.path.join(tmp, f"{i}.png"), accent=accent, handle="", logo=None))
+        mini = mini.resize((tw, th), Image.LANCZOS)
+        mask = Image.new("L", (tw, th), 0)
+        ImageDraw.Draw(mask).rounded_rectangle([0, 0, tw - 1, th - 1], radius=14, fill=255)
+        img.paste(mini, (x0, y0), mask)
+        d.rounded_rectangle([x0, y0, x0 + tw - 1, y0 + th - 1], radius=14, outline=(48, 58, 70), width=2)
+        num = str(i + 1)
+        d.ellipse([x0 - 14, y0 - 14, x0 + 30, y0 + 30], fill=accent_rgb)
+        d.text((x0 + 8, y0 + 8), num, font=font("ExtraBold", 26), fill=BG, anchor="mm")
     img.save(path, "PNG", optimize=True)
     return path

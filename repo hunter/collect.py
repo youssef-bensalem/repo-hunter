@@ -68,7 +68,7 @@ def extract_repo_names(text):
 
 # ---------- sources ----------
 
-def search_github(session, days_back=None, min_stars=None, topics=None, now=None):
+def search_github(session, days_back=None, min_stars=None, topics=None, now=None, pages=1):
     days_back = config.DAYS_BACK if days_back is None else days_back
     min_stars = config.MIN_STARS if min_stars is None else min_stars
     topics = config.TOPICS if topics is None else topics
@@ -78,18 +78,24 @@ def search_github(session, days_back=None, min_stars=None, topics=None, now=None
     queries = [f"created:>{since} stars:>{min_stars}"]
     queries += [f"created:>{since} stars:>{max(min_stars // 4, 20)} topic:{t}" for t in topics]
 
-    results = []
-    for i, q in enumerate(queries):
-        if i:
-            time.sleep(2)  # search API allows 30 requests/min with a token
-        try:
-            r = session.get(f"{GH_API}/search/repositories",
-                            params={"q": q, "sort": "stars", "order": "desc", "per_page": 50}, timeout=30)
-            r.raise_for_status()
-        except requests.RequestException as e:
-            print(f"[warn] GitHub search failed for {q!r}: {e}")
-            continue
-        results += [normalize(item, "github") for item in r.json().get("items", [])]
+    results, calls = [], 0
+    for q in queries:
+        for page in range(1, pages + 1):
+            if calls:
+                time.sleep(2)  # search API allows 30 requests/min with a token
+            calls += 1
+            try:
+                r = session.get(f"{GH_API}/search/repositories",
+                                params={"q": q, "sort": "stars", "order": "desc",
+                                        "per_page": 50 if pages == 1 else 100, "page": page}, timeout=30)
+                r.raise_for_status()
+            except requests.RequestException as e:
+                print(f"[warn] GitHub search failed for {q!r}: {e}")
+                break
+            items = r.json().get("items", [])
+            results += [normalize(item, "github") for item in items]
+            if len(items) < 100:
+                break
     return results
 
 

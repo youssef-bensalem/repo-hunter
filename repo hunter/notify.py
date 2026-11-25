@@ -28,22 +28,29 @@ def _make_card(item, card_dir, n):
         return None
 
 
-def build_daily_messages(items, date, card_dir=None):
+def build_daily_messages(items, date, card_dir=None, notice=None):
     card_dir = card_dir or tempfile.mkdtemp(prefix="cards-")
     header = (f"## 📦 Repo picks for {date}\n"
               "Pick 1–2. Open the repo before posting, save the image, put the GitHub link in the first reply.")
-    if not items:
+    if notice:
+        header += f"\n\n{notice}"
+    if not items and not notice:
         header += "\n\nNo new repos passed the filters today."
     messages = [{"content": header}]
 
     for n, it in enumerate(items, 1):
-        content = f"**{n}. {it['full_name']}** · ⭐ {it['stars']:,} · score {it['score']}\n"
+        best = " · 🏆 **best pick today**" if n == 1 and len(items) > 1 else ""
+        content = f"**{n}. {it['full_name']}** · ⭐ {it['stars']:,} · score {it['score']}{best}\n"
+        tags = [it.get("category")] + ([f"alternative to {it['replaces']}"] if it.get("replaces") else [])
+        if any(tags):
+            content += "🏷️ " + " · ".join(t for t in tags if t) + "\n"
         if it.get("alt"):
             content += (f"Option A · {it['chars']}/280\n{_code(it['text'])}\n"
                         f"Option B · {x_length(it['alt'])}/280\n{_code(it['alt'])}\n")
         else:
             content += f"{it['chars']}/280\n{_code(it['text'])}\n"
-        content += f"Reply link: <{it['url']}>"
+        reply = it["url"] + (f"\nWebsite: {it['homepage']}" if it.get("homepage") else "")
+        content += f"First reply (paste under your post):\n{_code(reply)}"
         if it.get("flag"):
             content += f"\n🚩 {it['flag']}"
         if it.get("warning"):
@@ -70,10 +77,17 @@ def build_daily_messages(items, date, card_dir=None):
     return messages
 
 
-def build_weekly_messages(tweets, date):
+def build_weekly_messages(tweets, date, items=(), card_dir=None):
     if not tweets:
         return [{"content": f"## 🧵 Weekly thread for {date}\nNo picks were sent this week, so there is no thread."}]
-    messages = [{"content": f"## 🧵 Weekly thread for {date}\nPost these in order as one thread."}]
+    messages = [{"content": f"## 🧵 Weekly thread for {date}\n"
+                            "Post these in order as one thread. Attach the cover image to tweet 1."}]
+    if items:
+        try:
+            card_dir = card_dir or tempfile.mkdtemp(prefix="cover-")
+            messages[0]["file"] = card.render_cover(list(items), os.path.join(card_dir, f"cover-{date}.png"))
+        except Exception as e:  # never lose the thread over an image
+            print(f"[warn] cover image failed: {e}")
     for i, tweet in enumerate(tweets, 1):
         messages.append({"content": f"**{i}/{len(tweets)}**\n{_code(tweet)}"[:2000]})
     return messages

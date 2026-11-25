@@ -47,25 +47,101 @@ def _tidy(text):
     return text
 
 
-def llm_chat(messages, max_tokens=2048, temperature=0.7):
-    """Call any OpenAI-compatible chat endpoint (Gemini, Groq, OpenRouter, Ollama...)."""
-    if not config.LLM_API_KEY:
-        raise LLMError("LLM_API_KEY not set")
-    url = f"{config.LLM_BASE_URL}/chat/completions"
-    body = {"model": config.LLM_MODEL, "messages": messages,
-            "temperature": temperature, "max_tokens": max_tokens}  # generous: thinking models use tokens too
-    last = "unknown error"
+# ---------- LLM providers ----------
+
+def providers():
+    """The main LLM and, if configured, the backup one (tried in this order)."""
+    out = []
+    for label, key, base, model in (("main", config.LLM_API_KEY, config.LLM_BASE_URL, config.LLM_MODEL),
+                                    ("backup", config.LLM2_API_KEY, config.LLM2_BASE_URL, config.LLM2_MODEL)):
+        if key:
+            out.append({"label": label, "key": key, "base": base.rstrip("/"), "model": model})
+    return out
+
+
+_picked = {}          # base url -> model chosen automatically this run
+LAST_ERROR = None     # last LLM error of this run, for the Discord banner and the doctor report
+
+_SKIP_MODEL = re.compile(r"embed|tts|audio|image|imagen|veo|live|guard|whisper|transcri|moderation|search|realtime|"
+                         r"robotics|computer-use|deep-research|aqa|learnlm|gemma-3n|nano", re.I)
+
+
+def _model_rank(model_id):
+    nums = tuple(int(n) for n in re.findall(r"\d+", model_id)[:3])
+    return (0 if re.search(r"preview|exp", model_id, re.I) else 1,
+            1 if "latest" in model_id else 0, nums)
+
+
+def pick_model(ids):
+    """Choose a good, cheap chat model from a /models list."""
+    ids = [i.removeprefix("models/") for i in ids if not _SKIP_MODEL.search(i)]
+    for pattern in (r"flash(?!.*lite)", r"flash", r"gpt-oss-120b|llama-?3\.3-70b|llama.*70b|qwen.*32b|kimi",
+                    r"llama|qwen|gpt-oss|mistral|gemma", r"."):
+        found = [i for i in ids if re.search(pattern, i, re.I)]
+        if found:
+            return max(found, key=_model_rank)
+    return None
+
+
+def list_models(p):
+    r = requests.get(f"{p['base']}/models", headers={"Authorization": f"Bearer {p['key']}"}, timeout=30)
+    r.raise_for_status()
+    return [m.get("id", "") for m in r.json().get("data", [])]
+
+
+def explain(error):
+    """Plain-English fix for an LLM error."""
+    e = str(error)
+    if "not set" in e:
+        return "Add the LLM_API_KEY secret: repo Settings → Secrets and variables → Actions."
+    if re.search(r"API.?KEY.?INVALID|API key not valid|invalid.?api.?key|HTTP 401|HTTP 403|PERMISSION_DENIED", e, re.I):
+        return ("The API key is wrong or disabled. Create a new key (aistudio.google.com → Get API key), "
+                "then replace the LLM_API_KEY secret. Paste only the key, no spaces or quotes.")
+    if re.search(r"location|region|FAILED_PRECONDITION", e, re.I):
+        return "This provider refuses requests from GitHub's servers' region. Add a backup provider (LLM2_API_KEY)."
+    if re.search(r"HTTP 429|RESOURCE_EXHAUSTED|quota|rate", e, re.I):
+        return "Free-tier limit reached (resets daily). Lower TOP_N or add a backup provider (LLM2_API_KEY)."
+    if re.search(r"HTTP 404|not found|does not exist|model", e, re.I):
+        return "The model name is wrong. Remove the LLM_MODEL variable to let the bot pick one automatically."
+    if re.search(r"HTTP 400", e):
+        return "The provider rejected the request. Check LLM_BASE_URL matches the key's provider."
+    return "Network or provider problem; it usually fixes itself. Run the doctor mode if it keeps happening."
+
+
+def _post(p, body):
+    return requests.post(f"{p['base']}/chat/completions", json=body,
+                         headers={"Authorization": f"Bearer {p['key']}"}, timeout=90)
+
+
+def _chat_one(p, messages, max_tokens, temperature):
+    model = _picked.get(p["base"]) or p["model"]
+    if not model:
+        model = _picked[p["base"]] = pick_model(list_models(p))
+    body = {"model": model, "messages": messages, "temperature": temperature,
+            "max_tokens": max_tokens}  # generous: thinking models use tokens too
+    last, repicked = "unknown error", False
     for attempt in range(3):
         try:
-            r = requests.post(url, json=body, headers={"Authorization": f"Bearer {config.LLM_API_KEY}"}, timeout=90)
+            r = _post(p, body)
         except requests.RequestException as e:
             last = str(e)
             time.sleep(5 * (attempt + 1))
             continue
         if r.status_code in (429, 500, 502, 503, 504):
-            last = f"HTTP {r.status_code}"
+            last = f"HTTP {r.status_code}: {r.text[:200]}"
             time.sleep(10 * (attempt + 1))
             continue
+        if r.status_code in (400, 404) and not repicked and re.search(r"model", r.text, re.I) \
+                and not re.search(r"API.?KEY|api key", r.text, re.I):
+            repicked = True             # unknown model name: pick one from the provider's own list
+            try:
+                new = pick_model(list_models(p))
+            except (requests.RequestException, ValueError):
+                new = None
+            if new and new != model:
+                print(f"[info] model {model!r} not available on {p['label']} provider, using {new!r}")
+                model = body["model"] = _picked[p["base"]] = new
+                continue
         if r.status_code != 200:
             raise LLMError(f"HTTP {r.status_code}: {r.text[:300]}")
         try:
@@ -76,6 +152,23 @@ def llm_chat(messages, max_tokens=2048, temperature=0.7):
             raise LLMError("empty response")
         return content.strip()
     raise LLMError(f"gave up after 3 tries ({last})")
+
+
+def llm_chat(messages, max_tokens=2048, temperature=0.7):
+    """Ask the main LLM; if it fails, the backup one. Any OpenAI-compatible API works."""
+    global LAST_ERROR
+    ps = providers()
+    if not ps:
+        LAST_ERROR = "LLM_API_KEY not set"
+        raise LLMError(LAST_ERROR)
+    errors = []
+    for p in ps:
+        try:
+            return _chat_one(p, messages, max_tokens, temperature)
+        except (LLMError, requests.RequestException, ValueError) as e:
+            errors.append(f"{p['label']}: {e}")
+    LAST_ERROR = " | ".join(errors)
+    raise LLMError(LAST_ERROR)
 
 
 # ---------- single post ----------
@@ -125,7 +218,9 @@ def _repo_brief(repo, readme):
             f"Description: {repo['description']}\n"
             f"Language: {repo.get('language') or 'n/a'} | Stars: {repo['stars']} | License: {repo.get('license')}\n"
             f"Topics: {', '.join(repo.get('topics') or []) or 'n/a'}\n"
-            f"Homepage: {repo.get('homepage') or 'n/a'}\n\n"
+            f"{'It says it replaces: ' + repo['replaces'] + ' (a strong hook)' + chr(10) if repo.get('replaces') else ''}"
+            f"Homepage: {repo.get('homepage') or 'n/a'}\n"
+            f"Install command (shown on the image): {repo.get('install') or 'none'}\n\n"
             f"README (excerpt):\n{readme or '(no README)'}")
 
 
@@ -166,7 +261,7 @@ def draft_post(repo, readme, handle=None):
     except LLMError as e:
         print(f"[warn] LLM draft failed for {repo['full_name']}: {e}")
         variants, used_llm = [fallback_post(repo, handle)], False
-        warning = f"template draft (LLM: {e})"
+        warning = "template draft: the AI failed (reason at the top of today's messages)"
 
     text, alt = variants[0], (variants[1] if len(variants) > 1 else None)
     chars = x_length(text)
