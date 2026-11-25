@@ -420,3 +420,387 @@ def test_caption_prompt_and_retry_threshold(monkeypatch):
     assert "120 characters" in sent[0]["messages"][0]["content"]
     assert '"by @maker"' in sent[0]["messages"][0]["content"]
     assert out["text"] == "Short hook.\nrepo does X.\nby @maker" and out["alt"] == "Other angle.\nby @maker"
+
+
+# ---------- LLM resilience ----------
+
+GEMINI_MODELS = ["models/gemini-2.5-flash", "models/gemini-2.5-flash-lite", "models/gemini-2.5-pro",
+                 "models/gemini-3-flash-preview", "models/text-embedding-004", "models/gemini-2.5-flash-preview-tts",
+                 "models/imagen-4.0-generate-001", "models/gemini-flash-latest"]
+GROQ_MODELS = ["llama-3.1-8b-instant", "whisper-large-v3", "meta-llama/llama-guard-4-12b",
+               "llama-3.3-70b-versatile", "openai/gpt-oss-120b"]
+
+
+def test_pick_model():
+    assert draft.pick_model(GEMINI_MODELS) == "gemini-flash-latest"
+    assert draft.pick_model([m for m in GEMINI_MODELS if "latest" not in m]) == "gemini-2.5-flash"
+    assert draft.pick_model(GROQ_MODELS) == "openai/gpt-oss-120b"
+    assert draft.pick_model(["text-embedding-004"]) is None
+
+
+def _llm_env(monkeypatch, backup=False):
+    monkeypatch.setattr(config, "LLM_API_KEY", "main-key")
+    monkeypatch.setattr(config, "LLM_BASE_URL", "https://main/v1")
+    monkeypatch.setattr(config, "LLM_MODEL", "gemini-old")
+    monkeypatch.setattr(config, "LLM2_API_KEY", "backup-key" if backup else "")
+    monkeypatch.setattr(config, "LLM2_BASE_URL", "https://backup/v1")
+    monkeypatch.setattr(config, "LLM2_MODEL", "")
+    monkeypatch.setattr(draft, "_picked", {})
+
+
+def _ok(text):
+    return FakeResp(data={"choices": [{"message": {"content": text}}]})
+
+
+def test_unknown_model_is_replaced_automatically(monkeypatch):
+    _llm_env(monkeypatch)
+    calls = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        calls.append(json["model"])
+        if json["model"] == "gemini-old":
+            return FakeResp(404, {"error": {"message": "models/gemini-old is not found for API version v1beta"}})
+        return _ok("hello")
+    monkeypatch.setattr(draft.requests, "post", fake_post)
+    monkeypatch.setattr(draft.requests, "get", lambda url, headers=None, timeout=None:
+                        FakeResp(data={"data": [{"id": m} for m in GEMINI_MODELS]}))
+    assert draft.llm_chat([{"role": "user", "content": "hi"}]) == "hello"
+    assert calls == ["gemini-old", "gemini-flash-latest"]
+    assert draft.llm_chat([{"role": "user", "content": "again"}]) == "hello"   # remembered for the run
+    assert calls[-1] == "gemini-flash-latest"
+
+
+def test_backup_provider_takes_over(monkeypatch):
+    _llm_env(monkeypatch, backup=True)
+    seen = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen.append((url, headers["Authorization"], json["model"]))
+        if url.startswith("https://main"):
+            return FakeResp(400, {"error": {"message": "API key not valid. Please pass a valid API key.",
+                                            "status": "INVALID_ARGUMENT", "reason": "API_KEY_INVALID"}})
+        return _ok("from groq")
+    monkeypatch.setattr(draft.requests, "post", fake_post)
+    monkeypatch.setattr(draft.requests, "get", lambda url, headers=None, timeout=None:
+                        FakeResp(data={"data": [{"id": m} for m in GROQ_MODELS]}))
+    assert draft.llm_chat([{"role": "user", "content": "hi"}]) == "from groq"
+    assert seen[0][:2] == ("https://main/v1/chat/completions", "Bearer main-key")   # key error: no model re-pick
+    assert seen[-1] == ("https://backup/v1/chat/completions", "Bearer backup-key", "openai/gpt-oss-120b")
+    assert len(seen) == 2
+
+
+def test_all_providers_fail_records_error(monkeypatch):
+    _llm_env(monkeypatch)
+    monkeypatch.setattr(draft.requests, "post", lambda *a, **k: FakeResp(400, {"error": {"message": "API key not valid"}}))
+    with pytest.raises(draft.LLMError):
+        draft.llm_chat([])
+    assert "main: HTTP 400" in draft.LAST_ERROR and "API key" in draft.explain(draft.LAST_ERROR)
+
+
+def test_explain_hints():
+    assert "LLM_API_KEY secret" in draft.explain("LLM_API_KEY not set")
+    assert "new key" in draft.explain('HTTP 400: {"reason": "API_KEY_INVALID"}')
+    assert "Free-tier limit" in draft.explain("HTTP 429: RESOURCE_EXHAUSTED")
+    assert "model name" in draft.explain("HTTP 404: model not found")
+    assert "region" in draft.explain("HTTP 400: User location is not supported for the API use. FAILED_PRECONDITION")
+
+
+# ---------- diagnostics ----------
+
+def test_llm_failure_banner(monkeypatch, tmp_path):
+    monkeypatch.setattr(draft, "LAST_ERROR", 'main: HTTP 400: {"reason": "API_KEY_INVALID"}')
+    picks = [{"used_llm": False}, {"used_llm": True}]
+    notice = main.llm_notice(picks)
+    assert "1/2 repos" in notice and "API_KEY_INVALID" in notice and "new key" in notice
+    assert main.llm_notice([{"used_llm": True}]) is None
+    msgs = notify.build_daily_messages([], "d", card_dir=str(tmp_path), notice=notice)
+    assert notice in msgs[0]["content"]
+
+
+def test_doctor_report(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "DISCORD_WEBHOOK_URL", "https://discord/webhook")
+    monkeypatch.setattr(config, "GITHUB_TOKEN", "")
+    _llm_env(monkeypatch, backup=True)
+
+    class S:
+        def get(self, url, timeout=None):
+            return FakeResp(data={"resources": {"core": {"remaining": 990, "limit": 1000}}})
+    monkeypatch.setattr(main, "gh_session", lambda token: S())
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        if url.startswith("https://main"):
+            return FakeResp(400, {"error": {"message": "API key not valid", "reason": "API_KEY_INVALID"}})
+        return _ok("OK")
+    monkeypatch.setattr(draft.requests, "post", fake_post)
+    monkeypatch.setattr(draft.requests, "get", lambda url, headers=None, timeout=None:
+                        FakeResp(data={"data": [{"id": m} for m in GROQ_MODELS]}))
+    sent = []
+    monkeypatch.setattr(main, "send", lambda url, msgs, dry_run=False: sent.append((url, msgs, dry_run)))
+
+    def net(url, headers=None, timeout=None):     # main and draft share the requests module
+        if "reddit" in url:
+            raise main.requests.ConnectionError("403 blocked")
+        if url.endswith("/models"):
+            return FakeResp(data={"data": [{"id": m} for m in GROQ_MODELS]})
+        return FakeResp(data={"hits": []})
+    monkeypatch.setattr(main.requests, "get", net)
+    problems = main.run_doctor()
+    report = sent[0][1][0]["content"]
+    assert problems == 1 and sent[0][2] is False
+    assert "❌ Main AI failed" in report and "Fix: The API key is wrong" in report
+    assert "✅ Backup AI works: model `openai/gpt-oss-120b`" in report
+    assert "✅ Post images render" in report and "✅ GitHub API works (WITHOUT token: 990/1000" in report
+    assert "1 problem(s) found" in report
+    assert "✅ Hacker News reachable" in report and "ℹ️ Reddit not reachable" in report
+
+
+def test_crash_alert_posts_and_reraises(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "DISCORD_WEBHOOK_URL", "https://discord/webhook")
+    posted = []
+    monkeypatch.setattr(main.requests, "post", lambda url, json=None, timeout=None: posted.append(json))
+
+    def boom(dry_run=False):
+        raise RuntimeError("something broke")
+    monkeypatch.setattr(main, "run_daily", boom)
+    with pytest.raises(RuntimeError):
+        main.main(["daily"])
+    assert "repo-hunter crashed" in posted[0]["content"] and "something broke" in posted[0]["content"]
+    assert posted[0]["allowed_mentions"] == {"parse": []}
+
+
+# ---------- categories, alternatives, variety (real descriptions) ----------
+
+def _r(name, desc, topics=()):
+    r = repo(name, desc=desc)
+    r["topics"] = list(topics)
+    return r
+
+
+def test_alternative_to_real_descriptions():
+    cases = {
+        "Private AI meeting notes that stay on your computer. An alternative to Granola, Otter and Fireflies.":
+            "Granola, Otter and Fireflies",
+        "Open source canva alternative": "Canva",
+        "Free, open-source IDM alternative for Windows, macOS and Linux": "IDM",
+        "A small, fast container runtime for macOS, Windows and Linux with free Ngrok alternative": "Ngrok",
+        "A free alternative for Windows users who need fast downloads": None,
+        "An alternative way to browse files": None,
+        "Fast JSON parser": None,
+    }
+    for desc, want in cases.items():
+        assert score.alternative_to(_r("x/y", desc)) == want, desc
+    assert score.alternative_to(_r("x/y", "Download manager", ["idm-alternative"])) == "IDM"
+    assert score.alternative_to(_r("x/y", "Meeting notes", ["granola-alternative"])) == "Granola"
+
+
+def test_categorize_real_descriptions():
+    assert score.categorize(_r("x/zb", "Free, offline checks for known mercenary spyware on Windows, Mac, Linux, "
+                                       "iPhone and Android")) == "Security"
+    assert score.categorize(_r("x/kiri", "A small, fast container runtime for macOS, Windows and Linux")) == "Dev tool"
+    assert score.categorize(_r("x/wordcraft", "an open-source, clean-room word processor in pure Rust")) == "Productivity"
+    assert score.categorize(_r("x/net-merge", "Use all your internet connections at once on Windows, macOS, "
+                                              "Linux and Android")) == "Desktop app"
+    assert score.categorize(_r("x/unslop", "A Claude skill that turns vibecoded UI into a designed interface")) == "AI"
+    assert score.categorize(_r("x/thing", "Something else entirely")) == "Other"
+
+
+def test_variety_rules():
+    a1 = {**_r("alice/one", "x y z"), "category": "AI"}
+    a2 = {**_r("Alice/two", "x y z"), "category": "Dev tool"}
+    b = {**_r("bob/b", "x y z"), "category": "AI"}
+    c = {**_r("carol/c", "x y z"), "category": "AI"}
+    assert score.variety_block(a2, [a1], set()) == "same owner as another pick today"     # case-insensitive
+    assert score.variety_block(c, [a1, b], set(), max_per_category=2) == "already 2 AI picks today"
+    assert score.variety_block(c, [a1], {"carol"}) == "owner featured in the last few days"
+    assert score.variety_block(c, [a1], set()) is None
+    hist = [{"full_name": "carol/old", "date": "2026-11-21"}, {"full_name": "dave/old", "date": "2026-11-10"}]
+    assert score.recent_owners(hist, now=NOW, days=3) == {"carol"}
+
+
+def test_alternative_boost_and_labels(tmp_path):
+    plain = repo("x/plain", stars=1000, desc="A fast markdown notes app for everyone")
+    alt = repo("y/alt", stars=900, desc="A fast notes app, an alternative to Notion")
+    ranked = score.rank([plain, alt], {}, now=NOW)
+    assert [r["full_name"] for r in ranked] == ["y/alt", "x/plain"]        # 900 * 1.3 beats 1000
+    assert ranked[0]["replaces"] == "Notion" and ranked[0]["category"] == "Productivity"
+    item = {**ranked[0], "text": "t", "chars": 1, "warning": None}
+    content = notify.build_daily_messages([item], "d", card_dir=str(tmp_path))[1]["content"]
+    assert "🏷️ Productivity · alternative to Notion" in content
+
+
+def test_game_port_filter():
+    bad = ["An attempt at running GTA VI on PC", "VERY experimental Nintendo Switch 2 emulator",
+           "Static recompilation of The Legend of Zelda: Tears of the Kingdom to native Windows",
+           "Xbox Series compatibility layer for Windows - runs console game code natively",
+           "Native PC port of P.T. (runs from your own PS4 game files)",
+           "Play your own Switch games on iPhone/iPad, one-click macOS app"]
+    good = ["20 AI testers on 20 different phones in parallel using Android emulators",
+            "Run real Linux kernel natively on iOS with an emulator", "Emulate macOS on iOS and iPadOS",
+            "A tiny game engine for making pixel art games in Rust"]
+    for d in bad:
+        assert score.reject_reason(repo("x/y", desc=d), {}, NOW) == "game port/emulator (copyright & malware risk)", d
+    for d in good:
+        assert score.reject_reason(repo("x/y", desc=d), {}, NOW) is None, d
+
+
+# ---------- install command ----------
+
+def test_find_install():
+    import card
+    r = repo("acme/ripdocs")
+    readme = """# ripdocs
+## Development
+```bash
+git clone https://github.com/acme/ripdocs && cd ripdocs
+pip install -r requirements.txt
+pip install -e .
+npm install
+```
+## Install
+```sh
+$ pip install ripdocs
+brew install acme/tap/ripdocs
+```
+Or with Docker: `docker run --rm -it -v $(pwd):/data ghcr.io/acme/ripdocs:latest --very-long-flag`
+"""
+    assert card.find_install(readme, r) == "brew install acme/tap/ripdocs"    # brew preferred, names repo
+    assert card.find_install("```\npip install ripdocs\n```", r) == "pip install ripdocs"
+    assert card.find_install("```\ncargo install <crate-name>\n```", r) is None           # placeholder
+    assert card.find_install("```\nnpm install\npip install -r requirements.txt\n```", r) is None
+    assert card.find_install("```\ncurl -fsSL https://x.sh | sh\n```", r) is None        # not offered
+    assert card.find_install("```bash\n  npx -y ripdocs init\n```", r) == "npx -y ripdocs init"
+    assert card.find_install("> winget install -e --id Acme.RipDocs", r) == "winget install -e --id Acme.RipDocs"
+    assert card.find_install("```\ngo install github.com/acme/ripdocs@latest\n```", r) == \
+        "go install github.com/acme/ripdocs@latest"
+    # a command for another tool (no repo name) loses to one that names the repo
+    assert card.find_install("```\nbrew install ffmpeg\nnpm i -g ripdocs\n```", r) == "npm i -g ripdocs"
+    assert card.find_install("", r) is None
+
+
+def test_card_with_install_line(tmp_path):
+    import card
+    from PIL import Image
+    r = {**repo("acme/ripdocs", desc="word " * 100), "install": "brew install acme/tap/ripdocs"}
+    img = Image.open(card.render_card(r, str(tmp_path / "c.png"), handle=""))
+    assert img.size == (1600, 900)
+    # the install box sits between the description and the chips row
+    box_row = [img.getpixel((card.PAD + 5, y)) for y in range(560, 740)]
+    assert (17, 22, 29) in box_row
+
+
+def test_reupload_and_fork_ratio():
+    up = repo("x/artex", desc="ARTEX - AI pentest system (English translation; upstream: Autumn-27/ARTEX)")
+    assert score.reject_reason(up, {}, NOW) == "re-upload or mirror of another repo"
+    assert score.reject_reason(repo("x/m", desc="A read-only mirror of the Linux kernel tree"), {}, NOW) == \
+        "re-upload or mirror of another repo"
+    assert score.reject_reason(repo("x/ok", desc="Upstream-first tooling for package maintainers"), {}, NOW) is None
+    farm = repo("x/farm", stars=11780, desc="Plug-in media player for everyone", created="2026-01-01T00:00:00Z")
+    farm["forks"] = 9137
+    normal = repo("x/normal", stars=18505, desc="An open source word processor", created="2026-01-01T00:00:00Z")
+    normal["forks"] = 5142
+    flags = {r["full_name"]: r["flag"] for r in score.rank([farm, normal], {}, now=NOW)}
+    assert "9,137 forks for 11,780 stars" in flags["x/farm"] and flags["x/normal"] is None
+
+
+def test_backfill(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "LLM_API_KEY", "")
+    monkeypatch.setattr(config, "LLM2_API_KEY", "")
+    (tmp_path / "seen.json").write_text('{"old/sent": "2026-11-01"}')
+    items = [gh_item("old/sent", stars=90000, desc="Already sent before to everyone"),
+             gh_item("a/big", stars=50000, desc="A big tool for developers everywhere"),
+             gh_item("a/second", stars=40000, desc="Same owner second tool here"),
+             gh_item("b/alt", stars=30000, desc="A fast open source alternative to Notion"),
+             gh_item("c/small", stars=35000, desc="Another useful tool for builders")]
+    calls = []
+
+    class S:
+        def get(self, url, params=None, timeout=None, headers=None):
+            if url.endswith("/search/repositories"):
+                calls.append(params)
+                return FakeResp(data={"items": items})
+            if url.endswith("/readme"):
+                return FakeResp(text="# Readme\n" + "content " * 100 + "\n```\npip install thing\n```")
+            if "/users/" in url:
+                return FakeResp(data={"twitter_username": None})
+            return FakeResp(404)
+    monkeypatch.setattr(main, "gh_session", lambda token: S())
+    sent = []
+    monkeypatch.setattr(main, "send", lambda url, msgs, dry_run=False: sent.append(msgs))
+    picks = main.run_backfill(now=NOW, days=50, count=3)
+    # seen skipped, one per owner, the Notion alternative boosted (30000*1.3=39000 > 35000)
+    assert [p["full_name"] for p in picks] == ["a/big", "b/alt", "c/small"]
+    assert calls[0]["q"].startswith("created:>2026-10-04 stars:>400") and calls[0]["per_page"] == 50
+    assert "📚 Backfill: the 3 best repos of the last 50 days" in sent[0][0]["content"]
+    assert picks[0]["install"] == "pip install thing"
+    seen = json.loads((tmp_path / "seen.json").read_text())
+    assert set(seen) == {"old/sent", "a/big", "b/alt", "c/small"}
+    assert not (tmp_path / "history.json").exists() or json.loads((tmp_path / "history.json").read_text()) == []
+
+
+def test_search_pages(monkeypatch):
+    pages = []
+
+    class S:
+        def get(self, url, params=None, timeout=None):
+            pages.append(params["page"])
+            n = 100 if params["page"] < 2 else 30
+            return FakeResp(data={"items": [gh_item(f"o/r{params['page']}-{i}") for i in range(n)]})
+    out = collect.search_github(S(), days_back=50, min_stars=400, topics=[], now=NOW, pages=3)
+    assert pages == [1, 2] and len(out) == 130
+
+
+def test_weekly_cover_attached(tmp_path):
+    from PIL import Image
+    items = [{"full_name": f"o{i}/repo{i}", "description": "A useful tool for people", "stars": 100 * i,
+              "language": "Go"} for i in range(1, 6)]
+    msgs = notify.build_weekly_messages(["t1", "t2"], "2026-11-29", items=items, card_dir=str(tmp_path))
+    assert Image.open(msgs[0]["file"]).size == (1600, 900) and "cover image" in msgs[0]["content"]
+    assert [m["content"].split("\n")[0] for m in msgs[1:]] == ["**1/2**", "**2/2**"]
+    assert "file" not in notify.build_weekly_messages(["t"], "d")[0]        # no items: no cover
+
+
+def test_cover_layouts(tmp_path):
+    import card
+    from PIL import Image
+    for n in (1, 2, 4, 5, 6):
+        items = [{"full_name": f"o/r{i}", "description": "d e f", "stars": 1} for i in range(n)]
+        assert Image.open(card.render_cover(items, str(tmp_path / f"{n}.png"), handle="h")).size == (1600, 900)
+
+
+def test_github_outage_notice(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(main, "STOPPED_EARLY", False)
+    candidates = [collect.normalize(gh_item(f"o{i}/r{i}", stars=1000 - i), "github") for i in range(8)]
+    monkeypatch.setattr(main, "collect", lambda s, now=None: candidates)
+    monkeypatch.setattr(main, "fetch_readme", lambda s, n: None)
+    sent = []
+    monkeypatch.setattr(main, "send", lambda url, msgs, dry_run=False: sent.append(msgs))
+    main.run_daily(dry_run=True, now=NOW)
+    header = sent[0][0]["content"]
+    assert "GitHub stopped answering" in header and "No new repos passed" not in header
+
+
+def test_best_pick_and_reply_block(tmp_path):
+    a = {**repo("x/a"), "score": 9, "text": "t", "chars": 1, "warning": None, "homepage": "https://a.dev"}
+    b = {**repo("y/b"), "score": 5, "text": "t", "chars": 1, "warning": None}
+    msgs = notify.build_daily_messages([a, b], "d", card_dir=str(tmp_path))
+    assert "🏆 **best pick today**" in msgs[1]["content"] and "best pick" not in msgs[2]["content"]
+    assert "First reply (paste under your post):\n```\nhttps://github.com/x/a\nWebsite: https://a.dev\n```" in msgs[1]["content"]
+    assert "```\nhttps://github.com/y/b\n```" in msgs[2]["content"]
+
+
+def test_weekly_skips_picks_that_todays_filters_reject(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "LLM_API_KEY", "")
+    monkeypatch.setattr(config, "LLM2_API_KEY", "")
+    hist = [{"date": "2026-11-22", "full_name": "x/leonida", "url": "u", "stars": 30481, "score": 9000,
+             "description": "Leonida Is A Native PC Recompilation Of The Xbox Version Of Grand Theft Auto 6"},
+            {"date": "2026-11-22", "full_name": "y/tool", "url": "u", "stars": 500, "score": 10,
+             "description": "A useful command line tool for developers"}]
+    (tmp_path / "history.json").write_text(json.dumps(hist))
+    monkeypatch.setattr(main, "send", lambda url, msgs, dry_run=False: None)
+    tweets = main.run_weekly(now=NOW)
+    assert any("tool" in t for t in tweets) and not any("leonida" in t.lower() for t in tweets)
