@@ -263,5 +263,70 @@
     "score": 478.03,
     "text": "Stop juggling mod folders.  \nStardew Valley Mod Manager lets you enable/disable SMAPI mods from a single GUI.",
     "date": "2026-11-25"
+  },
+  {
+    "full_name": "alesha-pro/llm.asm",
+    "url": "https://github.com/alesha-pro/llm.asm",
+    "description": "Qwen3-0.6B inference (12 KB), bare-metal bootable OS (22 KB), and from-scratch Mini-GPT trainer with live Braille TUI (32 KB) in 100% pure x86-64 NASM assembly. Zero C, zero libc, zero dependencies.",
+    "stars": 1210,
+    "language": "Assembly",
+    "license": "MIT",
+    "install": null,
+    "category": "AI",
+    "score": 876.82,
+    "text": "Run Qwen in a 14 KB binary written in pure assembly.\nZero C, zero libc, and faster than llama.cpp on CPU.\nby @superalesha",
+    "date": "2026-11-26"
+  },
+  {
+    "full_name": "kai415-debug/ffmpeg-video-audio-converter",
+    "url": "https://github.com/kai415-debug/ffmpeg-video-audio-converter",
+    "description": "Free Windows FFmpeg GUI for video and audio conversion, batch transcoding, and multimedia format encoding.",
+    "stars": 1020,
+    "language": "C++",
+    "license": "MIT",
+    "install": null,
+    "category": "Design & media",
+    "score": 365.09,
+    "text": "Convert any video or audio on Windows with a click, no CLI needed.  \nffmpeg-video-audio-converter gives you a GUI for FFmpeg.",
+    "date": "2026-11-26"
+  },
+  {
+    "full_name": "qianyiai/kurocat",
+    "url": "https://github.com/qianyiai/kurocat",
+    "description": "KuroCat — Free open-source 3D/2D desktop typing cat & AI coding companion (Bongo Cat alternative · Tauri v2 + Rust + MCP · Claude/Codex/DeepSeek/OBS · Win/Mac/Linux/Android)｜开源3D桌面打字小黑猫与AI伴侣",
+    "stars": 1314,
+    "language": "TypeScript",
+    "license": "MIT",
+    "install": "brew install --cask qianyiai/tap/kurocat",
+    "category": "AI",
+    "score": 339.44,
+    "text": "3D typing cat that chats with Claude, Codex, DeepSeek.  \nkurocat – desktop pet + AI coding buddy, brew install.",
+    "date": "2026-11-26"
+  },
+  {
+    "full_name": "deterministic-machines/deslop-please",
+    "url": "https://github.com/deterministic-machines/deslop-please",
+    "description": "Bring (back) sanity to your code",
+    "stars": 1138,
+    "language": "Rust",
+    "license": "MIT",
+    "install": "cargo install deslop-please",
+    "category": "Other",
+    "score": 255.25,
+    "text": "Your Rust code stays tidy, modules stay deep, interfaces stay narrow.  \ndeslop-please lints out sloppy design.",
+    "date": "2026-11-26"
+  },
+  {
+    "full_name": "leanprover-community/riemann-hypothesis",
+    "url": "https://github.com/leanprover-community/riemann-hypothesis",
+    "description": "Lean formalization of the Riemann Hypothesis (Alpöge, 2026-11-20) being cleaned up by members of the Lean community.",
+    "stars": 1401,
+    "language": "Lean",
+    "license": "Apache-2.0",
+    "install": null,
+    "category": "Other",
+    "score": 230.61,
+    "text": "riemann-hypothesis: Lean formalization of the Riemann Hypothesis (Alpöge, 2026-11-20) being cleaned up by members of…",
+    "date": "2026-11-26"
   }
 ]
